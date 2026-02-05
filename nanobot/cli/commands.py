@@ -73,6 +73,49 @@ def onboard():
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
+@app.command("login")
+def login(
+    provider: str = typer.Option("openai-codex", "--provider", "-p", help="Auth provider"),
+):
+    """Login to an auth provider (e.g. openai-codex)."""
+    if provider != "openai-codex":
+        console.print(f"[red]Unsupported provider: {provider}[/red]")
+        raise typer.Exit(1)
+
+    from nanobot.auth.codex_oauth import login_codex_oauth_interactive
+
+    def on_auth(url: str) -> None:
+        console.print("[cyan]A browser window will open for login. If it doesn't, open this URL manually:[/cyan]")
+        console.print(url)
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    def on_status(message: str) -> None:
+        console.print(f"[yellow]{message}[/yellow]")
+
+    def on_progress(message: str) -> None:
+        console.print(f"[dim]{message}[/dim]")
+
+    def on_prompt(message: str) -> str:
+        return typer.prompt(message)
+
+    def on_manual_code_input(message: str) -> None:
+        console.print(f"[cyan]{message}[/cyan]")
+
+    console.print("[green]Starting OpenAI Codex OAuth login...[/green]")
+    login_codex_oauth_interactive(
+        on_auth=on_auth,
+        on_prompt=on_prompt,
+        on_status=on_status,
+        on_progress=on_progress,
+        on_manual_code_input=on_manual_code_input,
+    )
+    console.print("[green]✓ Login successful. Credentials saved.[/green]")
+
+
 
 
 def _create_workspace_templates(workspace: Path):
@@ -161,6 +204,8 @@ def gateway(
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.auth.codex_oauth import ensure_codex_token_available
     from nanobot.agent.loop import AgentLoop
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
@@ -183,17 +228,26 @@ def gateway(
     api_base = config.get_api_base()
     model = config.agents.defaults.model
     is_bedrock = model.startswith("bedrock/")
+    is_codex = model.startswith("openai-codex/")
 
-    if not api_key and not is_bedrock:
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
-        raise typer.Exit(1)
-    
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    if is_codex:
+        try:
+            ensure_codex_token_available()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
+            raise typer.Exit(1)
+        provider = OpenAICodexProvider(default_model=model)
+    else:
+        if not api_key and not is_bedrock:
+            console.print("[red]Error: No API key configured.[/red]")
+            console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
+            raise typer.Exit(1)
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=config.agents.defaults.model
+        )
     
     # Create agent
     agent = AgentLoop(
@@ -286,6 +340,8 @@ def agent(
     from nanobot.config.loader import load_config
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.auth.codex_oauth import ensure_codex_token_available
     from nanobot.agent.loop import AgentLoop
     
     config = load_config()
@@ -294,17 +350,29 @@ def agent(
     api_base = config.get_api_base()
     model = config.agents.defaults.model
     is_bedrock = model.startswith("bedrock/")
+    is_codex = model.startswith("openai-codex/")
 
-    if not api_key and not is_bedrock:
-        console.print("[red]Error: No API key configured.[/red]")
-        raise typer.Exit(1)
+    if is_codex:
+        try:
+            ensure_codex_token_available()
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print("Please run: [cyan]nanobot login --provider openai-codex[/cyan]")
+            raise typer.Exit(1)
+    else:
+        if not api_key and not is_bedrock:
+            console.print("[red]Error: No API key configured.[/red]")
+            raise typer.Exit(1)
 
     bus = MessageBus()
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
+    if is_codex:
+        provider = OpenAICodexProvider(default_model=config.agents.defaults.model)
+    else:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=config.agents.defaults.model
+        )
     
     agent_loop = AgentLoop(
         bus=bus,
