@@ -54,6 +54,7 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        sillytavern_config: object | None = None,  # Avoid circular import
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -70,7 +71,10 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
+        from nanobot.config.schema import SillyTavernConfig
+        self.sillytavern_config = sillytavern_config or SillyTavernConfig()
+        
+        self.context = ContextBuilder(workspace, self.sillytavern_config)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -164,6 +168,35 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    def _apply_response_filter(self, content: str) -> str:
+        """
+        Filter response content based on SillyTavern configuration.
+        If response_filter_tag is set (e.g. "answer"), only return content within <tag>...</tag>.
+        If the tag is not found, return the full content (fallback).
+        """
+        if not content:
+            return content
+            
+        if not self.sillytavern_config.enabled:
+            return content
+            
+        tag = self.sillytavern_config.response_filter_tag
+        if not tag:
+            return content
+            
+        # Try to find content within tags
+        # Single line or multiline, non-greedy match
+        pattern = f"<{tag}>(.*?)</{tag}>"
+        matches = re.findall(pattern, content, re.DOTALL)
+        
+        if matches:
+            # Join all occurrences with newlines
+            return "\n\n".join(m.strip() for m in matches if m.strip())
+            
+        # Fallback: return full content if tag is missing
+        # This prevents the bot from being "silent" if it forgets to use the tag
+        return content
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -220,7 +253,16 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    
+                    try:
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        # Log the result length and preview for debugging
+                        result_preview = result[:500].replace("\n", "\\n") + "..." if len(result) > 500 else result.replace("\n", "\\n")
+                        logger.info(f"Tool result ({len(result)} chars): {result_preview}")
+                    except Exception as e:
+                        logger.error(f"Tool execution failed: {e}")
+                        result = f"Error: {str(e)}"
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -351,10 +393,15 @@ class AgentLoop:
                             tools_used=tools_used if tools_used else None)
         self.sessions.save(session)
         
+        filtered_content = self._apply_response_filter(final_content)
+        
+        if filtered_content != final_content:
+            logger.info(f"Filtered response ({len(filtered_content)} chars): {filtered_content[:200]}...")
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content,
+            content=filtered_content,
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
     
@@ -395,10 +442,12 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         self.sessions.save(session)
         
+        filtered_content = self._apply_response_filter(final_content)
+        
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
-            content=final_content
+            content=filtered_content
         )
     
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:

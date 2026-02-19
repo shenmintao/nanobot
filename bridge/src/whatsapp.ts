@@ -9,13 +9,21 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys';
 
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
+import { Buffer } from 'buffer';
 
 const VERSION = '0.1.0';
+
+export interface MediaItem {
+  data: string; // base64
+  mimetype: string;
+  filename?: string;
+}
 
 export interface InboundMessage {
   id: string;
@@ -24,6 +32,7 @@ export interface InboundMessage {
   content: string;
   timestamp: number;
   isGroup: boolean;
+  media?: MediaItem[];
 }
 
 export interface WhatsAppClientOptions {
@@ -37,13 +46,13 @@ export class WhatsAppClient {
   private sock: any = null;
   private options: WhatsAppClientOptions;
   private reconnecting = false;
+  private logger = pino({ level: 'silent' });
 
   constructor(options: WhatsAppClientOptions) {
     this.options = options;
   }
 
   async connect(): Promise<void> {
-    const logger = pino({ level: 'silent' });
     const { state, saveCreds } = await useMultiFileAuthState(this.options.authDir);
     const { version } = await fetchLatestBaileysVersion();
 
@@ -53,10 +62,10 @@ export class WhatsAppClient {
     this.sock = makeWASocket({
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(state.keys, this.logger),
       },
       version,
-      logger,
+      logger: this.logger,
       printQRInTerminal: false,
       browser: ['nanobot', 'cli', VERSION],
       syncFullHistory: false,
@@ -116,58 +125,103 @@ export class WhatsAppClient {
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
-        const content = this.extractMessageContent(msg);
-        if (!content) continue;
+        try {
+          const { content, media } = await this.extractMessageContent(msg);
+          if (!content && (!media || media.length === 0)) continue;
 
-        const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
+          const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
-        this.options.onMessage({
-          id: msg.key.id || '',
-          sender: msg.key.remoteJid || '',
-          pn: msg.key.remoteJidAlt || '',
-          content,
-          timestamp: msg.messageTimestamp as number,
-          isGroup,
-        });
+          this.options.onMessage({
+            id: msg.key.id || '',
+            sender: msg.key.remoteJid || '',
+            pn: msg.key.remoteJidAlt || '',
+            content: content || '[Media Message]',
+            timestamp: msg.messageTimestamp as number,
+            isGroup,
+            media,
+          });
+        } catch (error) {
+          console.error('Error processing message:', error);
+        }
       }
     });
   }
 
-  private extractMessageContent(msg: any): string | null {
+  private async extractMessageContent(msg: any): Promise<{ content: string | null; media?: MediaItem[] }> {
     const message = msg.message;
-    if (!message) return null;
+    if (!message) return { content: null };
+
+    let content: string | null = null;
+    const media: MediaItem[] = [];
+
+    // Protocol buffers often nest the actual message (e.g. viewOnceMessage)
+    // We should unwrap it if needed, but for now we handle common structure.
+    // If msg.message.viewOnceMessageV2?.message...
+    const msgContent = message.viewOnceMessageV2?.message || message.viewOnceMessage?.message || message;
 
     // Text message
-    if (message.conversation) {
-      return message.conversation;
+    if (msgContent.conversation) {
+      content = msgContent.conversation;
+    }
+    // Extended text
+    else if (msgContent.extendedTextMessage?.text) {
+      content = msgContent.extendedTextMessage.text;
     }
 
-    // Extended text (reply, link preview)
-    if (message.extendedTextMessage?.text) {
-      return message.extendedTextMessage.text;
+    // Image
+    if (msgContent.imageMessage) {
+      content = msgContent.imageMessage.caption || content; // Use caption as content if available
+      try {
+        const buffer = await downloadMediaMessage(
+          msg,
+          'buffer',
+          {},
+          { logger: this.logger, reuploadRequest: this.sock.updateMediaMessage }
+        );
+        media.push({
+          data: buffer.toString('base64'),
+          mimetype: msgContent.imageMessage.mimetype || 'image/jpeg',
+          filename: 'image.jpg'
+        });
+      } catch (e) {
+        console.error('Failed to download image:', e);
+      }
     }
 
-    // Image with caption
-    if (message.imageMessage?.caption) {
-      return `[Image] ${message.imageMessage.caption}`;
+    // Video
+    if (msgContent.videoMessage) {
+      content = msgContent.videoMessage.caption || content;
+      // Nanobot backend mainly supports images via vision models, but we can forward video too if needed.
+      // For now, treat valid video as media if user wants it, but maybe skip large videos?
+      // Check file size? msgContent.videoMessage.fileLength
     }
 
-    // Video with caption
-    if (message.videoMessage?.caption) {
-      return `[Video] ${message.videoMessage.caption}`;
+    // Audio / Voice
+    if (msgContent.audioMessage) {
+      // Support voice transcription in backend if needed
+      try {
+        const buffer = await downloadMediaMessage(
+          msg,
+          'buffer',
+          {},
+          { logger: this.logger, reuploadRequest: this.sock.updateMediaMessage }
+        );
+        media.push({
+          data: buffer.toString('base64'),
+          mimetype: msgContent.audioMessage.mimetype || 'audio/ogg; codecs=opus',
+          filename: 'audio.ogg'
+        });
+      } catch (e) {
+        console.error('Failed to download audio:', e);
+      }
     }
 
-    // Document with caption
-    if (message.documentMessage?.caption) {
-      return `[Document] ${message.documentMessage.caption}`;
+    // Document
+    if (msgContent.documentMessage) {
+      content = msgContent.documentMessage.caption || content;
     }
 
-    // Voice/Audio message
-    if (message.audioMessage) {
-      return `[Voice Message]`;
-    }
-
-    return null;
+    return { content, media };
   }
 
   async sendMessage(to: string, text: string): Promise<void> {

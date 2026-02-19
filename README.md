@@ -794,6 +794,64 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 | `nanobot provider login openai-codex` | OAuth login for providers |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot st {char\|wi\|preset} ...` | Manage SillyTavern content |
+| `nanobot st char import <file>` | Import a character card |
+| `nanobot st char list` | List imported characters |
+| `nanobot st char activate <name>` | Set active character |
+| `nanobot st wi import <file>` | Import a world info book |
+| `nanobot st preset import <file>` | Import a generation preset |
+
+### 🎭 SillyTavern Management
+
+nanobot supports SillyTavern character cards (V2 spec), world info books, and generation presets.
+
+**1. Characters**
+```bash
+# Import a character card (PNG or JSON)
+nanobot st char import "MyCharacter.json"
+
+# List imported characters to see names and IDs
+nanobot st char list
+
+# Activate a character (uses its prompt and settings)
+nanobot st char activate "MyCharacter"
+
+# Deactivate (return to default agent behavior)
+nanobot st char deactivate
+```
+
+**2. World Info (Lorebooks)**
+```bash
+# Import a world info book
+nanobot st wi import "Lorebook.json"
+
+# List world info books
+nanobot st wi list
+
+# Enable a book (injects entries into context when triggered)
+nanobot st wi enable "Lorebook"
+
+# Disable a book
+nanobot st wi disable "Lorebook"
+```
+
+**3. Presets (Generation Settings)**
+```bash
+# Import a preset
+nanobot st preset import "MyPreset.json"
+
+# List presets
+nanobot st preset list
+
+# Activate a preset (applies generation parameters)
+nanobot st preset activate "MyPreset"
+```
+
+**4. Check Status**
+```bash
+nanobot st status
+```
+
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 

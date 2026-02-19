@@ -103,19 +103,57 @@ class WhatsAppChannel(BaseChannel):
         
         if msg_type == "message":
             # Incoming message from WhatsApp
-            # Deprecated by whatsapp: old phone number style typically: <phone>@s.whatspp.net
-            pn = data.get("pn", "")
             # New LID sytle typically: 
             sender = data.get("sender", "")
             content = data.get("content", "")
             
             # Extract just the phone number or lid as chat_id
+            # Deprecated by whatsapp: old phone number style typically: <phone>@s.whatspp.net
+            pn = data.get("pn", "")
             user_id = pn if pn else sender
             sender_id = user_id.split("@")[0] if "@" in user_id else user_id
             logger.info(f"Sender {sender}")
+
+            # Handle media
+            media_paths = []
+            if "media" in data and data["media"]:
+                import base64
+                import mimetypes
+                from pathlib import Path
+                
+                media_dir = Path.home() / ".nanobot" / "media"
+                media_dir.mkdir(parents=True, exist_ok=True)
+
+                for item in data["media"]:
+                    try:
+                        media_data = base64.b64decode(item["data"])
+                        # Guess extension if not provided/valid
+                        ext = mimetypes.guess_extension(item["mimetype"]) or ".bin"
+                        if item.get("filename") and "." in item["filename"]:
+                            ext = Path(item["filename"]).suffix
+
+                        # Use hash or timestamp for filename to avoid collisions
+                        import time
+                        import hashlib
+                        file_hash = hashlib.md5(media_data).hexdigest()[:16]
+                        filename = f"{file_hash}{ext}"
+                        file_path = media_dir / filename
+                        
+                        file_path.write_bytes(media_data)
+                        media_paths.append(str(file_path))
+                        logger.info(f"Saved WhatsApp media to {file_path}")
+                        
+                        # Append note to content for context
+                        if item["mimetype"].startswith("image/"):
+                            content += f"\n[Image: {filename}]"
+                        elif item["mimetype"].startswith("audio/"):
+                             content += f"\n[Audio: {filename}]"
+
+                    except Exception as e:
+                        logger.error(f"Failed to process WhatsApp media item: {e}")
             
-            # Handle voice transcription if it's a voice message
-            if content == "[Voice Message]":
+            # Handle voice transcription if it's a voice message (legacy check, or from new media logic)
+            if content == "[Voice Message]" and not media_paths:
                 logger.info(f"Voice message received from {sender_id}, but direct download from bridge is not yet supported.")
                 content = "[Voice Message: Transcription not available for WhatsApp yet]"
             
@@ -123,6 +161,7 @@ class WhatsAppChannel(BaseChannel):
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
+                media=media_paths,
                 metadata={
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),

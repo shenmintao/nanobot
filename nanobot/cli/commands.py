@@ -30,6 +30,10 @@ app = typer.Typer(
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 
+# SillyTavern sub-commands
+from nanobot.cli.sillytavern import st_app
+app.add_typer(st_app, name="st")
+
 # ---------------------------------------------------------------------------
 # CLI input: prompt_toolkit for editing, paste, history, and display
 # ---------------------------------------------------------------------------
@@ -368,6 +372,7 @@ def gateway(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
+        sillytavern_config=config.sillytavern,
     )
     
     # Set cron callback (needs agent)
@@ -484,6 +489,7 @@ def agent(
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
+        sillytavern_config=config.sillytavern,
     )
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -637,17 +643,33 @@ def _get_bridge_dir() -> Path:
     if (user_bridge / "dist" / "index.js").exists():
         return user_bridge
     
+
+
     # Check for npm
     if not shutil.which("npm"):
         console.print("[red]npm not found. Please install Node.js >= 18.[/red]")
         raise typer.Exit(1)
     
-    # Find source bridge: first check package data, then source dir
-    pkg_bridge = Path(__file__).parent.parent / "bridge"  # nanobot/bridge (installed)
-    src_bridge = Path(__file__).parent.parent.parent / "bridge"  # repo root/bridge (dev)
+    # Find source bridge
+    pkg_bridge = Path(__file__).parent.parent / "bridge"
+    src_bridge = Path(__file__).parent.parent.parent / "bridge"
+    app_bridge = Path("/app/bridge")
+    cwd_bridge = Path.cwd() / "bridge"
     
     source = None
-    if (pkg_bridge / "package.json").exists():
+    is_prebuilt = False
+    
+    # Check for pre-built bridge (priority to /app/bridge in Docker)
+    if (app_bridge / "dist" / "index.js").exists():
+        source = app_bridge
+        is_prebuilt = True
+    elif (cwd_bridge / "dist" / "index.js").exists():
+        source = cwd_bridge
+        is_prebuilt = True
+    elif (src_bridge / "dist" / "index.js").exists():
+        source = src_bridge
+        is_prebuilt = True
+    elif (pkg_bridge / "package.json").exists():
         source = pkg_bridge
     elif (src_bridge / "package.json").exists():
         source = src_bridge
@@ -663,6 +685,16 @@ def _get_bridge_dir() -> Path:
     user_bridge.parent.mkdir(parents=True, exist_ok=True)
     if user_bridge.exists():
         shutil.rmtree(user_bridge)
+        
+    if is_prebuilt:
+        # Copy everything including dist and node_modules
+        console.print(f"  Using pre-built bridge from {source}")
+        shutil.copytree(source, user_bridge)
+        # Verify it works? simpler to just trust it for now
+        console.print("[green]✓[/green] Bridge ready (pre-built)\n")
+        return user_bridge
+
+    # Otherwise build from source
     shutil.copytree(source, user_bridge, ignore=shutil.ignore_patterns("node_modules", "dist"))
     
     # Install and build

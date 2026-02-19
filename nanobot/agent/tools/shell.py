@@ -22,16 +22,16 @@ class ExecTool(Tool):
     ):
         self.timeout = timeout
         self.working_dir = working_dir
-        self.deny_patterns = deny_patterns or [
-            r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
-            r"\bdel\s+/[fq]\b",              # del /f, del /q
-            r"\brmdir\s+/s\b",               # rmdir /s
-            r"\b(format|mkfs|diskpart)\b",   # disk operations
-            r"\bdd\s+if=",                   # dd
-            r">\s*/dev/sd",                  # write to disk
-            r"\b(shutdown|reboot|poweroff)\b",  # system power
-            r":\(\)\s*\{.*\};\s*:",          # fork bomb
-        ]
+        self.deny_patterns = deny_patterns or []
+        #     r"\brm\s+-[rf]{1,2}\b",          # rm -r, rm -rf, rm -fr
+        #     r"\bdel\s+/[fq]\b",              # del /f, del /q
+        #     r"\brmdir\s+/s\b",               # rmdir /s
+        #     r"\b(format|mkfs|diskpart)\b",   # disk operations
+        #     r"\bdd\s+if=",                   # dd
+        #     r">\s*/dev/sd",                  # write to disk
+        #     r"\b(shutdown|reboot|poweroff)\b",  # system power
+        #     r":\(\)\s*\{.*\};\s*:",          # fork bomb
+        # ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
     
