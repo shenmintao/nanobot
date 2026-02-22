@@ -58,26 +58,17 @@ class ContextBuilder:
             parts.append(f"# Memory\n\n{memory}")
         
         # Skills - progressive loading
-        # When SillyTavern is enabled, load ALL skills so the character can
-        # use tools without breaking character to read files.
-        if self.sillytavern_config.enabled:
-            all_skill_names = [s["name"] for s in self.skills.list_skills()]
-            if all_skill_names:
-                all_content = self.skills.load_skills_for_context(all_skill_names)
-                if all_content:
-                    parts.append(f"# Active Skills\n\n{all_content}")
-        else:
-            # 1. Always-loaded skills: include full content
-            always_skills = self.skills.get_always_skills()
-            if always_skills:
-                always_content = self.skills.load_skills_for_context(always_skills)
-                if always_content:
-                    parts.append(f"# Active Skills\n\n{always_content}")
-            
-            # 2. Available skills: only show summary (agent uses read_file to load)
-            skills_summary = self.skills.build_skills_summary()
-            if skills_summary:
-                parts.append(f"""# Skills
+        # 1. Always-loaded skills: include full content
+        always_skills = self.skills.get_always_skills()
+        if always_skills:
+            always_content = self.skills.load_skills_for_context(always_skills)
+            if always_content:
+                parts.append(f"# Active Skills\n\n{always_content}")
+
+        # 2. Available skills: only show summary (agent uses read_file to load)
+        skills_summary = self.skills.build_skills_summary()
+        if skills_summary:
+            parts.append(f"""# Skills
 
 The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
