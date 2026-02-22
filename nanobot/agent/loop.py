@@ -59,8 +59,9 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        sillytavern_config: object | None = None,  # Avoid circular import
     ):
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.config.schema import ExecToolConfig, SillyTavernConfig
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
@@ -74,7 +75,8 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
+        self.sillytavern_config = sillytavern_config or SillyTavernConfig()
+        self.context = ContextBuilder(workspace, self.sillytavern_config)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -167,6 +169,31 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    def _apply_response_filter(self, content: str) -> str:
+        """
+        Filter response content based on SillyTavern configuration.
+        If response_filter_tag is set (e.g. "answer"), only return content within <tag>...</tag>.
+        If the tag is not found, return the full content (fallback).
+        """
+        if not content:
+            return content
+
+        if not self.sillytavern_config.enabled:
+            return content
+
+        tag = self.sillytavern_config.response_filter_tag
+        if not tag:
+            return content
+
+        pattern = f"<{tag}>(.*?)</{tag}>"
+        matches = re.findall(pattern, content, re.DOTALL)
+
+        if matches:
+            return "\n\n".join(m.strip() for m in matches if m.strip())
+
+        # Fallback: return full content if tag is missing
+        return content
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -222,6 +249,8 @@ class AgentLoop:
                     )
             else:
                 final_content = self._strip_think(response.content)
+                if final_content:
+                    final_content = self._apply_response_filter(final_content)
                 break
 
         return final_content, tools_used

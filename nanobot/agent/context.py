@@ -20,8 +20,10 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, sillytavern_config: object | None = None):
         self.workspace = workspace
+        from nanobot.config.schema import SillyTavernConfig
+        self.sillytavern_config = sillytavern_config or SillyTavernConfig()
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
     
@@ -45,23 +47,37 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
         
+        # SillyTavern content injection
+        st_content = self._build_sillytavern_context()
+        if st_content:
+            parts.append(st_content)
+
         # Memory context
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(f"# Memory\n\n{memory}")
         
         # Skills - progressive loading
-        # 1. Always-loaded skills: include full content
-        always_skills = self.skills.get_always_skills()
-        if always_skills:
-            always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
-                parts.append(f"# Active Skills\n\n{always_content}")
-        
-        # 2. Available skills: only show summary (agent uses read_file to load)
-        skills_summary = self.skills.build_skills_summary()
-        if skills_summary:
-            parts.append(f"""# Skills
+        # When SillyTavern is enabled, load ALL skills so the character can
+        # use tools without breaking character to read files.
+        if self.sillytavern_config.enabled:
+            all_skill_names = [s["name"] for s in self.skills.list_skills()]
+            if all_skill_names:
+                all_content = self.skills.load_skills_for_context(all_skill_names)
+                if all_content:
+                    parts.append(f"# Active Skills\n\n{all_content}")
+        else:
+            # 1. Always-loaded skills: include full content
+            always_skills = self.skills.get_always_skills()
+            if always_skills:
+                always_content = self.skills.load_skills_for_context(always_skills)
+                if always_content:
+                    parts.append(f"# Active Skills\n\n{always_content}")
+            
+            # 2. Available skills: only show summary (agent uses read_file to load)
+            skills_summary = self.skills.build_skills_summary()
+            if skills_summary:
+                parts.append(f"""# Skills
 
 The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
@@ -116,6 +132,74 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
                 parts.append(f"## {filename}\n\n{content}")
         
         return "\n\n".join(parts) if parts else ""
+
+    def _build_sillytavern_context(self) -> str:
+        """Build SillyTavern context (character card, world info, preset, memories).
+
+        Returns empty string if no SillyTavern content is configured.
+        """
+        try:
+            if not self.sillytavern_config.enabled:
+                return ""
+
+            parts: list[str] = []
+
+            # 1. Active character card
+            from nanobot.sillytavern.storage import get_active_character
+            from nanobot.sillytavern.character_card import build_character_prompt
+
+            char = get_active_character()
+            if char:
+                prompt = build_character_prompt(char.data)
+                if prompt:
+                    parts.append(prompt)
+
+            # 2. World info (activated entries)
+            from nanobot.sillytavern.storage import get_enabled_world_info
+            from nanobot.sillytavern.world_info import (
+                get_activated_entries,
+                build_world_info_prompt,
+            )
+            from nanobot.sillytavern.types import WorldInfoBook
+
+            wi_books = get_enabled_world_info()
+            if wi_books:
+                activation_ctx = self.memory.get_memory_context() or ""
+
+                all_activated = []
+                for stored_book in wi_books:
+                    book = WorldInfoBook(entries=stored_book.entries)
+                    activated = get_activated_entries(book, activation_ctx)
+                    all_activated.extend(activated)
+
+                wi_prompt = build_world_info_prompt(all_activated)
+                if wi_prompt:
+                    parts.append(wi_prompt)
+
+            # 3. Active preset (prompt entries)
+            from nanobot.sillytavern.storage import get_active_preset
+            from nanobot.sillytavern.preset import get_enabled_prompts, build_preset_prompt, apply_macros
+            from nanobot.sillytavern.types import MacrosConfig
+
+            preset = get_active_preset()
+            if preset:
+                prompts = get_enabled_prompts(preset.data)
+                preset_prompt = build_preset_prompt(prompts)
+                if preset_prompt:
+                    macros = MacrosConfig(
+                        char=char.name if char else "Assistant",
+                    )
+                    preset_prompt = apply_macros(preset_prompt, macros)
+                    parts.append(f"## Preset Instructions\n\n{preset_prompt}")
+
+            if not parts:
+                return ""
+
+            return "# SillyTavern\n\n" + "\n\n---\n\n".join(parts)
+
+        except Exception:
+            # Fail silently — SillyTavern is optional
+            return ""
     
     def build_messages(
         self,

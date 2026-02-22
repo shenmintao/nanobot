@@ -20,6 +20,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 
 from nanobot import __version__, __logo__
 from nanobot.config.schema import Config
+from nanobot.cli.sillytavern import st_app
 
 app = typer.Typer(
     name="nanobot",
@@ -29,6 +30,9 @@ app = typer.Typer(
 
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
+
+# SillyTavern sub-commands
+app.add_typer(st_app, name="st")
 
 # ---------------------------------------------------------------------------
 # CLI input: prompt_toolkit for editing, paste, history, and display
@@ -368,6 +372,7 @@ def gateway(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
+        sillytavern_config=config.sillytavern,
     )
     
     # Set cron callback (needs agent)
@@ -484,6 +489,7 @@ def agent(
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
+        sillytavern_config=config.sillytavern,
     )
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -934,6 +940,7 @@ def cron_run(
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
+        sillytavern_config=config.sillytavern,
     )
 
     store_path = get_data_dir() / "cron" / "jobs.json"

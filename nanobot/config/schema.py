@@ -262,6 +262,13 @@ class MCPServerConfig(Base):
     headers: dict[str, str] = Field(default_factory=dict)  # HTTP: Custom HTTP Headers
 
 
+class SillyTavernConfig(Base):
+    """Configuration for SillyTavern integration."""
+
+    enabled: bool = False  # Global switch for SillyTavern features
+    response_filter_tag: str | None = None  # If set, only return content within <tag>...</tag>
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
@@ -279,6 +286,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    sillytavern: SillyTavernConfig = Field(default_factory=SillyTavernConfig)
 
     @property
     def workspace_path(self) -> Path:
