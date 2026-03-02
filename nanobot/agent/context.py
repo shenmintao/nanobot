@@ -26,16 +26,16 @@ class ContextBuilder:
         self.skills = SkillsLoader(workspace)
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
+        """Build the system prompt from identity, bootstrap files, memory, and skills.
+
+        Note: SillyTavern content is NOT included here — it is injected as a
+        separate user message in build_messages() for better model compliance.
+        """
         parts = [self._get_identity()]
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
-        # SillyTavern content injection
-        st_content = self._build_sillytavern_context()
-        if st_content:
-            parts.append(st_content)
 
         # Memory context
         memory = self.memory.get_memory_context()
@@ -186,13 +186,25 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build the complete message list for an LLM call."""
-        return [
+        """Build the complete message list for an LLM call.
+
+        SillyTavern character/world/preset content is injected as a user
+        message *before* conversation history so the model treats it as
+        authoritative context rather than a system-level identity override.
+        """
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.build_system_prompt(skill_names)},
-            *history,
-            {"role": "user", "content": self._build_runtime_context(channel, chat_id)},
-            {"role": "user", "content": self._build_user_content(current_message, media)},
         ]
+
+        # Inject SillyTavern context as a user message before history
+        st_content = self._build_sillytavern_context()
+        if st_content:
+            messages.append({"role": "user", "content": st_content})
+
+        messages.extend(history)
+        messages.append({"role": "user", "content": self._build_runtime_context(channel, chat_id)})
+        messages.append({"role": "user", "content": self._build_user_content(current_message, media)})
+        return messages
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""
