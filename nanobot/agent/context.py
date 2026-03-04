@@ -188,33 +188,30 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call.
 
-        SillyTavern character/world/preset content is injected as a user
-        message *before* conversation history so the model treats it as
-        authoritative context rather than a system-level identity override.
-
-        Runtime context and user content are merged into a single user message
-        to avoid consecutive same-role messages that some providers reject.
+        SillyTavern context, runtime context, and user content are all merged
+        into a single user message to avoid consecutive same-role messages that
+        some providers reject.
         """
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.build_system_prompt(skill_names)},
         ]
 
-        # Inject SillyTavern context as a user message before history
-        st_content = self._build_sillytavern_context()
-        if st_content:
-            messages.append({"role": "user", "content": st_content})
-
         messages.extend(history)
 
-        # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
+        # Build all user-side content parts
+        st_content = self._build_sillytavern_context()
         runtime_ctx = self._build_runtime_context(channel, chat_id)
         user_content = self._build_user_content(current_message, media)
 
+        # Merge everything into a single user message
         if isinstance(user_content, str):
-            merged = f"{runtime_ctx}\n\n{user_content}"
+            text_parts = [p for p in [st_content, runtime_ctx, user_content] if p]
+            merged = "\n\n".join(text_parts)
         else:
-            merged = [{"type": "text", "text": runtime_ctx}] + user_content
+            # Multimodal: prepend text parts, then image content
+            prefix_parts = [p for p in [st_content, runtime_ctx] if p]
+            prefix = [{"type": "text", "text": "\n\n".join(prefix_parts)}] if prefix_parts else []
+            merged = prefix + user_content
 
         messages.append({"role": "user", "content": merged})
         return messages
