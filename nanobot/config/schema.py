@@ -516,4 +516,9 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        env_prefix="NANOBOT_",
+        env_nested_delimiter="__",
+    )
