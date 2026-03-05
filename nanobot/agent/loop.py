@@ -28,7 +28,7 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
+    from nanobot.config.schema import ChannelsConfig, EmotionalCompanionConfig, ExecToolConfig
     from nanobot.cron.service import CronService
 
 
@@ -65,6 +65,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        emotional_companion_config: EmotionalCompanionConfig | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -114,6 +115,17 @@ class AgentLoop:
         self.response_filter: Callable[[str], str] | None = None
         self._register_default_tools()
 
+        # --- Emotional Companion (gated by config) ---
+        self._emotion_tracker = None
+        self._scene_awareness = None
+        self._proactive_care = None
+        self._link_understanding = None
+        self._media_understanding = None
+        self._diary_generator = None
+        self._emotion_tasks: set[asyncio.Task] = set()  # Strong refs to background emotion analysis
+        self._emotional_companion_config = emotional_companion_config
+        self._init_emotional_companion(emotional_companion_config)
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         allowed_dir = self.workspace if self.restrict_to_workspace else None
@@ -131,6 +143,85 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    def _init_emotional_companion(self, config: EmotionalCompanionConfig | None) -> None:
+        """Initialize emotional companion modules if enabled."""
+        if not config or not config.enabled:
+            return
+
+        logger.info("Emotional companion enabled")
+        modules = config.modules
+
+        # Emotion tracking
+        if modules.emotion_tracking:
+            from nanobot.sillytavern.emotion import EmotionTracker
+            self._emotion_tracker = EmotionTracker(
+                provider=self.provider,
+                model=self.model,
+            )
+            # Wire emotion context hook into ContextBuilder
+            self.context._emotion_context_hook = self._emotion_tracker.format_emotion_context
+            logger.info("  ✓ Emotion tracking enabled")
+
+        # Scene awareness
+        if modules.scene_awareness:
+            from nanobot.sillytavern.scene_awareness import SceneAwareness
+            tz = config.timezone or None
+            self._scene_awareness = SceneAwareness(timezone=tz)
+            # Wire scene context hook into ContextBuilder
+            self.context._scene_context_hook = self._scene_awareness.format_scene_prompt
+            logger.info("  ✓ Scene awareness enabled (tz={})", tz or "system")
+
+        # Proactive care
+        if modules.proactive_care:
+            from nanobot.sillytavern.proactive_care import ProactiveCareEngine
+            self._proactive_care = ProactiveCareEngine(
+                provider=self.provider,
+                model=self.model,
+                config=config.proactive_care,
+                emotion_tracker=self._emotion_tracker,
+                scene_awareness=self._scene_awareness,
+            )
+            logger.info("  ✓ Proactive care enabled")
+
+        # Link understanding
+        if modules.link_understanding:
+            from nanobot.agent.link_understanding import LinkUnderstanding
+            web_fetch = self.tools.get("web_fetch")
+            if web_fetch:
+                self._link_understanding = LinkUnderstanding(
+                    web_fetch_tool=web_fetch,
+                    max_urls=config.link_understanding.max_urls_per_message,
+                    max_content_chars=config.link_understanding.max_content_chars,
+                )
+                logger.info("  ✓ Link understanding enabled")
+            else:
+                logger.warning("  ✗ Link understanding skipped: web_fetch tool not available")
+
+        # Media understanding
+        if modules.media_understanding:
+            from nanobot.agent.media_understanding import MediaUnderstanding
+            self._media_understanding = MediaUnderstanding(
+                provider=self.provider,
+                model=self.model,
+                video_enabled=config.media_understanding.video_enabled,
+                pdf_enabled=config.media_understanding.pdf_enabled,
+                max_frames=config.media_understanding.max_frames,
+            )
+            logger.info("  ✓ Media understanding enabled")
+
+        # Diary generator
+        if modules.diary:
+            from nanobot.sillytavern.diary import DiaryGenerator
+            self._diary_generator = DiaryGenerator(
+                provider=self.provider,
+                model=self.model,
+                emotion_tracker=self._emotion_tracker,
+                session_manager=self.sessions,
+            )
+            # Wire diary context hook into ContextBuilder
+            self.context._diary_context_hook = self._diary_generator.format_diary_context
+            logger.info("  ✓ Diary generator enabled")
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -295,22 +386,137 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id, content=content,
         ))
 
+    def _get_whatsapp_channel(self):
+        """Get the WhatsApp channel instance if available."""
+        try:
+            from nanobot.channels.whatsapp import WhatsAppChannel
+            cm = getattr(self, 'channel_manager', None)
+            if cm and hasattr(cm, 'channels'):
+                ch = cm.channels.get("whatsapp")
+                if isinstance(ch, WhatsAppChannel):
+                    return ch
+        except ImportError:
+            pass
+        return None
+
+    async def _send_typing_indicator(self, msg: InboundMessage, composing: bool = True) -> None:
+        """Send typing indicator for WhatsApp messages."""
+        if msg.channel != "whatsapp":
+            return
+        wa = self._get_whatsapp_channel()
+        if wa:
+            await wa.send_typing(msg.chat_id, composing=composing)
+
+    async def _send_auto_reaction(self, msg: InboundMessage) -> None:
+        """Send automatic emoji reaction based on emotion analysis (WhatsApp only)."""
+        if msg.channel != "whatsapp" or not self._emotion_tracker:
+            return
+
+        # Check if auto_reaction is enabled in config
+        if self.channels_config:
+            wa_config = getattr(self.channels_config, 'whatsapp', None)
+            if wa_config and not getattr(wa_config, 'auto_reaction', True):
+                return
+
+        message_id = (msg.metadata or {}).get("message_id")
+        if not message_id:
+            return
+
+        wa = self._get_whatsapp_channel()
+        if not wa:
+            return
+
+        # Map emotions to reaction emojis
+        emotion_reactions = {
+            "happy": "😊", "sad": "🫂", "anxious": "💪",
+            "angry": "❤️", "excited": "🎉", "lonely": "🤗",
+            "tired": "☕", "grateful": "🥰", "frustrated": "💕",
+        }
+
+        try:
+            entry = await self._emotion_tracker.analyze(msg.content, msg.session_key)
+            if entry and entry.emotion in emotion_reactions:
+                emoji = emotion_reactions[entry.emotion]
+                await wa.send_reaction(msg.chat_id, message_id, emoji)
+        except Exception:
+            logger.debug("Auto-reaction failed", exc_info=True)
+
+    async def _send_tts_voice(self, msg: InboundMessage, text: str) -> None:
+        """Send TTS voice message for WhatsApp if configured."""
+        if msg.channel != "whatsapp":
+            return
+
+        # Check TTS config
+        if not self.channels_config:
+            return
+        wa_config = getattr(self.channels_config, 'whatsapp', None)
+        if not wa_config:
+            return
+        tts_config = getattr(wa_config, 'tts', None)
+        if not tts_config or not tts_config.enabled:
+            return
+
+        # Determine if we should send voice
+        is_voice_reply = "[语音转文字]" in msg.content
+        should_send = (
+            tts_config.mode == "always"
+            or (tts_config.mode == "mirror" and is_voice_reply)
+        )
+        if not should_send:
+            return
+
+        wa = self._get_whatsapp_channel()
+        if not wa:
+            return
+
+        try:
+            from nanobot.providers.tts import EdgeTTSProvider
+            tts = EdgeTTSProvider(
+                voice=tts_config.voice,
+                rate=tts_config.rate,
+                pitch=tts_config.pitch,
+            )
+            # Try OGG for WhatsApp PTT style, fallback to MP3
+            audio_path = await tts.synthesize(text, output_format="ogg")
+            if audio_path:
+                await wa._send_media_file(msg.chat_id, audio_path, ptt=True)
+                logger.debug("Sent TTS voice message to {}", msg.chat_id)
+        except Exception:
+            logger.debug("TTS voice send failed", exc_info=True)
+
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
         async with self._processing_lock:
             try:
+                # Send typing indicator (WhatsApp)
+                await self._send_typing_indicator(msg, composing=True)
+
                 response = await self._process_message(msg)
+
+                # Stop typing indicator
+                await self._send_typing_indicator(msg, composing=False)
+
                 if response is not None:
                     await self.bus.publish_outbound(response)
+
+                    # WhatsApp enhancements (non-blocking)
+                    if msg.channel == "whatsapp" and response.content:
+                        # Auto-reaction based on emotion
+                        asyncio.create_task(self._send_auto_reaction(msg))
+                        # TTS voice reply
+                        asyncio.create_task(self._send_tts_voice(msg, response.content))
+
                 elif msg.channel == "cli":
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="", metadata=msg.metadata or {},
                     ))
             except asyncio.CancelledError:
+                await self._send_typing_indicator(msg, composing=False)
                 logger.info("Task cancelled for session {}", msg.session_key)
                 raise
             except Exception:
+                await self._send_typing_indicator(msg, composing=False)
                 logger.exception("Error processing message for session {}", msg.session_key)
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
@@ -420,12 +626,43 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        # Emotional companion: record chat for scene awareness & proactive care
+        if self._scene_awareness:
+            self._scene_awareness.record_chat(key)
+        if self._proactive_care:
+            self._proactive_care.record_interaction(key)
+
+        # Emotional companion: link understanding — enrich message with link content
+        enriched_content = msg.content
+        if self._link_understanding and self._link_understanding.has_urls(msg.content):
+            try:
+                link_context = await self._link_understanding.summarize_links(msg.content)
+                if link_context:
+                    enriched_content = msg.content + link_context
+            except Exception:
+                logger.debug("Link understanding failed, continuing without", exc_info=True)
+
+        # Emotional companion: media understanding — process non-image media
+        media_context = ""
+        if self._media_understanding and msg.media:
+            for media_path in msg.media:
+                if self._media_understanding.is_supported(media_path):
+                    try:
+                        result = await self._media_understanding.process(media_path)
+                        if result:
+                            media_context += f"\n\n{result}"
+                    except Exception:
+                        logger.debug("Media understanding failed for {}", media_path, exc_info=True)
+        if media_context:
+            enriched_content = enriched_content + media_context
+
         history = session.get_history(max_messages=self.memory_window)
         initial_messages = self.context.build_messages(
             history=history,
-            current_message=msg.content,
+            current_message=enriched_content,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
+            session_key=key,
         )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
@@ -445,6 +682,14 @@ class AgentLoop:
 
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
+
+        # Emotional companion: async emotion analysis (non-blocking)
+        if self._emotion_tracker and msg.content.strip():
+            task = asyncio.create_task(
+                self._emotion_tracker.analyze(msg.content, key)
+            )
+            self._emotion_tasks.add(task)
+            task.add_done_callback(self._emotion_tasks.discard)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None

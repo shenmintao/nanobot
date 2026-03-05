@@ -25,9 +25,17 @@ class ContextBuilder:
         # Optional hook for injecting extra context (e.g. SillyTavern).
         # Must return a string or empty string.
         self.context_hook: Callable[[], str] | None = None
+        # Emotional companion hooks (set by AgentLoop when enabled)
+        self._emotion_context_hook: Callable[[str], str] | None = None
+        self._scene_context_hook: Callable[[str], str] | None = None
+        self._diary_context_hook: Callable[[str], str] | None = None
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        session_key: str = "",
+    ) -> str:
+        """Build the system prompt from identity, bootstrap files, memory, skills, and companion context."""
         parts = [self._get_identity()]
 
         bootstrap = self._load_bootstrap_files()
@@ -52,6 +60,33 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
+
+        # Emotional companion: scene awareness context
+        if self._scene_context_hook and session_key:
+            try:
+                scene_ctx = self._scene_context_hook(session_key)
+                if scene_ctx:
+                    parts.append(scene_ctx)
+            except Exception:
+                pass
+
+        # Emotional companion: emotion context
+        if self._emotion_context_hook and session_key:
+            try:
+                emotion_ctx = self._emotion_context_hook(session_key)
+                if emotion_ctx:
+                    parts.append(f"## 用户情感状态\n{emotion_ctx}")
+            except Exception:
+                pass
+
+        # Emotional companion: diary context (recent diary entries)
+        if self._diary_context_hook and session_key:
+            try:
+                diary_ctx = self._diary_context_hook(session_key)
+                if diary_ctx:
+                    parts.append(diary_ctx)
+            except Exception:
+                pass
 
         return "\n\n---\n\n".join(parts)
 
@@ -113,6 +148,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        session_key: str = "",
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         runtime_ctx = self._build_runtime_context(channel, chat_id)
@@ -138,7 +174,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             merged = prefix + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, session_key=session_key)},
             *history,
             {"role": "user", "content": merged},
         ]

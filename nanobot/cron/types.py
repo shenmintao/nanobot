@@ -1,7 +1,7 @@
 """Cron types."""
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass
@@ -16,17 +16,21 @@ class CronSchedule:
     expr: str | None = None
     # Timezone for cron expressions
     tz: str | None = None
+    # Optional end time (ms since epoch). Job auto-disables after this time.
+    end_at_ms: int | None = None
 
 
 @dataclass
 class CronPayload:
     """What to do when the job runs."""
-    kind: Literal["system_event", "agent_turn"] = "agent_turn"
+    kind: Literal["system_event", "agent_turn", "proactive_care", "diary_generate"] = "agent_turn"
     message: str = ""
     # Deliver response to channel
     deliver: bool = False
     channel: str | None = None  # e.g. "whatsapp"
     to: str | None = None  # e.g. phone number
+    # Extra context for proactive_care / diary_generate payloads
+    extra: dict[str, Any] | None = None
 
 
 @dataclass

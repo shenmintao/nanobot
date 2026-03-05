@@ -377,6 +377,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        emotional_companion_config=config.emotional_companion,
     )
     _attach_sillytavern_hooks(agent, config)
 
@@ -423,6 +424,9 @@ def gateway(
 
     # Create channel manager
     channels = ChannelManager(config, bus)
+
+    # Wire channel manager into agent for WhatsApp features (typing, reactions, TTS)
+    agent.channel_manager = channels
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
@@ -560,6 +564,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        emotional_companion_config=config.emotional_companion,
     )
     _attach_sillytavern_hooks(agent_loop, config)
 

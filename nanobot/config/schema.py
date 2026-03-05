@@ -14,6 +14,16 @@ class Base(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class TTSConfig(Base):
+    """Text-to-Speech configuration for voice message sending."""
+
+    enabled: bool = False  # Master switch for TTS
+    voice: str = "zh-CN-XiaoxiaoNeural"  # Edge TTS voice name or preset key
+    rate: str = "+0%"  # Speech rate adjustment
+    pitch: str = "+0Hz"  # Pitch adjustment
+    mode: str = "mirror"  # "mirror" = reply voice when user sends voice, "always" = always send voice, "never" = disabled
+
+
 class WhatsAppConfig(Base):
     """WhatsApp channel configuration."""
 
@@ -21,6 +31,9 @@ class WhatsAppConfig(Base):
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
     allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
+    tts: TTSConfig = Field(default_factory=TTSConfig)  # TTS configuration
+    debounce_seconds: float = 2.0  # Message debounce delay in seconds
+    auto_reaction: bool = True  # Auto-react to messages based on emotion analysis
 
 
 class TelegramConfig(Base):
@@ -313,6 +326,84 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30  # Seconds before a tool call is cancelled
 
 
+class EmotionalCompanionModulesConfig(Base):
+    """Per-module switches for emotional companion features."""
+
+    emotion_tracking: bool = True
+    scene_awareness: bool = True
+    proactive_care: bool = True
+    link_understanding: bool = True
+    diary: bool = True
+    media_understanding: bool = True
+
+
+class ProactiveCareGreetingConfig(Base):
+    """Configuration for a single greeting type (good morning / good night)."""
+
+    enabled: bool = True
+    cron_expr: str = "0 8 * * *"
+
+
+class ProactiveCareConfig(Base):
+    """Configuration for proactive care features."""
+
+    enabled: bool = True
+    good_morning: ProactiveCareGreetingConfig = Field(
+        default_factory=lambda: ProactiveCareGreetingConfig(cron_expr="0 8 * * *")
+    )
+    good_night: ProactiveCareGreetingConfig = Field(
+        default_factory=lambda: ProactiveCareGreetingConfig(cron_expr="0 23 * * *")
+    )
+    miss_you_after_hours: int = 24
+    emotion_care_negative_threshold: int = 3
+    cooldown_minutes: dict[str, int] = Field(default_factory=lambda: {
+        "greeting": 720,
+        "emotion_care": 240,
+        "miss_you": 1440,
+    })
+
+
+class DiaryConfig(Base):
+    """Configuration for shared diary / timeline features."""
+
+    auto_generate: bool = True
+    generate_time: str = "23:00"  # HH:MM in user timezone
+    min_messages_for_entry: int = 5
+    include_emotion_summary: bool = True
+
+
+class LinkUnderstandingConfig(Base):
+    """Configuration for link understanding features."""
+
+    max_urls_per_message: int = 3
+    max_content_chars: int = 2000
+
+
+class MediaUnderstandingConfig(Base):
+    """Configuration for media understanding features."""
+
+    video_enabled: bool = True
+    pdf_enabled: bool = True
+    max_frames: int = 3
+
+
+class EmotionalCompanionConfig(Base):
+    """Configuration for emotional companion features.
+
+    All features are gated behind ``enabled`` (default: False).
+    When disabled, the system behaves as a standard SillyTavern backend
+    with zero overhead from companion features.
+    """
+
+    enabled: bool = False  # Master switch — default OFF for pure tavern users
+    timezone: str = ""  # IANA timezone for the user, e.g. "Asia/Shanghai"
+    modules: EmotionalCompanionModulesConfig = Field(default_factory=EmotionalCompanionModulesConfig)
+    proactive_care: ProactiveCareConfig = Field(default_factory=ProactiveCareConfig)
+    diary: DiaryConfig = Field(default_factory=DiaryConfig)
+    link_understanding: LinkUnderstandingConfig = Field(default_factory=LinkUnderstandingConfig)
+    media_understanding: MediaUnderstandingConfig = Field(default_factory=MediaUnderstandingConfig)
+
+
 class SillyTavernConfig(Base):
     """Configuration for SillyTavern integration."""
 
@@ -338,6 +429,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     sillytavern: SillyTavernConfig = Field(default_factory=SillyTavernConfig)
+    emotional_companion: EmotionalCompanionConfig = Field(default_factory=EmotionalCompanionConfig)
 
     @property
     def workspace_path(self) -> Path:

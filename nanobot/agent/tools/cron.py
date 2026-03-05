@@ -65,6 +65,12 @@ class CronTool(Tool):
                     "type": "string",
                     "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
                 },
+                "end_at": {
+                    "type": "string",
+                    "description": "ISO datetime to stop recurring tasks (e.g. '2026-02-12T15:00:00'). "
+                                   "The job auto-disables after this time. Use with every_seconds or cron_expr "
+                                   "when the user specifies a time range like '9:30 to 15:00'.",
+                },
                 "job_id": {"type": "string", "description": "Job ID (for remove)"},
             },
             "required": ["action"],
@@ -78,13 +84,14 @@ class CronTool(Tool):
         cron_expr: str | None = None,
         tz: str | None = None,
         at: str | None = None,
+        end_at: str | None = None,
         job_id: str | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
             if self._in_cron_context.get():
                 return "Error: cannot schedule new jobs from within a cron job execution"
-            return self._add_job(message, every_seconds, cron_expr, tz, at)
+            return self._add_job(message, every_seconds, cron_expr, tz, at, end_at)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -98,6 +105,7 @@ class CronTool(Tool):
         cron_expr: str | None,
         tz: str | None,
         at: str | None,
+        end_at: str | None = None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
@@ -113,12 +121,23 @@ class CronTool(Tool):
             except (KeyError, Exception):
                 return f"Error: unknown timezone '{tz}'"
 
+        # Parse end_at if provided
+        end_at_ms = None
+        if end_at:
+            from datetime import datetime
+
+            try:
+                end_dt = datetime.fromisoformat(end_at)
+                end_at_ms = int(end_dt.timestamp() * 1000)
+            except ValueError:
+                return f"Error: invalid ISO datetime format for end_at '{end_at}'. Expected format: YYYY-MM-DDTHH:MM:SS"
+
         # Build schedule
         delete_after = False
         if every_seconds:
-            schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
+            schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000, end_at_ms=end_at_ms)
         elif cron_expr:
-            schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
+            schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz, end_at_ms=end_at_ms)
         elif at:
             from datetime import datetime
 
@@ -139,9 +158,11 @@ class CronTool(Tool):
             deliver=True,
             channel=self._channel,
             to=self._chat_id,
-            delete_after_run=delete_after,
+            delete_after_run=delete_after or bool(end_at_ms),
         )
-        return f"Created job '{job.name}' (id: {job.id})"
+
+        end_info = f", ends at {end_at}" if end_at else ""
+        return f"Created job '{job.name}' (id: {job.id}{end_info})"
 
     def _list_jobs(self) -> str:
         jobs = self._cron.list_jobs()

@@ -100,6 +100,7 @@ class CronService:
                             every_ms=j["schedule"].get("everyMs"),
                             expr=j["schedule"].get("expr"),
                             tz=j["schedule"].get("tz"),
+                            end_at_ms=j["schedule"].get("endAtMs"),
                         ),
                         payload=CronPayload(
                             kind=j["payload"].get("kind", "agent_turn"),
@@ -107,6 +108,7 @@ class CronService:
                             deliver=j["payload"].get("deliver", False),
                             channel=j["payload"].get("channel"),
                             to=j["payload"].get("to"),
+                            extra=j["payload"].get("extra"),
                         ),
                         state=CronJobState(
                             next_run_at_ms=j.get("state", {}).get("nextRunAtMs"),
@@ -147,6 +149,7 @@ class CronService:
                         "everyMs": j.schedule.every_ms,
                         "expr": j.schedule.expr,
                         "tz": j.schedule.tz,
+                        "endAtMs": j.schedule.end_at_ms,
                     },
                     "payload": {
                         "kind": j.payload.kind,
@@ -154,6 +157,7 @@ class CronService:
                         "deliver": j.payload.deliver,
                         "channel": j.payload.channel,
                         "to": j.payload.to,
+                        "extra": j.payload.extra,
                     },
                     "state": {
                         "nextRunAtMs": j.state.next_run_at_ms,
@@ -193,9 +197,25 @@ class CronService:
         if not self._store:
             return
         now = _now_ms()
+        # First, remove or disable jobs that have passed their end_at_ms
+        expired_ids: list[str] = []
+        for job in self._store.jobs:
+            if (job.enabled and job.schedule.end_at_ms
+                    and now >= job.schedule.end_at_ms):
+                logger.info("Cron: job '{}' ({}) past end time on restart, removing", job.name, job.id)
+                expired_ids.append(job.id)
+        if expired_ids:
+            self._store.jobs = [j for j in self._store.jobs if j.id not in expired_ids]
+
         for job in self._store.jobs:
             if job.enabled:
-                job.state.next_run_at_ms = _compute_next_run(job.schedule, now)
+                next_run = _compute_next_run(job.schedule, now)
+                # Skip scheduling if next run would be past end_at_ms
+                if next_run and job.schedule.end_at_ms and next_run > job.schedule.end_at_ms:
+                    job.enabled = False
+                    job.state.next_run_at_ms = None
+                else:
+                    job.state.next_run_at_ms = next_run
 
     def _get_next_wake_ms(self) -> int | None:
         """Get the earliest next run time across all jobs."""
@@ -231,6 +251,17 @@ class CronService:
             return
 
         now = _now_ms()
+
+        # First, expire any jobs that have passed their end_at_ms
+        expired_ids: list[str] = []
+        for j in self._store.jobs:
+            if (j.enabled and j.schedule.end_at_ms
+                    and now >= j.schedule.end_at_ms):
+                logger.info("Cron: job '{}' ({}) reached end time, removing", j.name, j.id)
+                expired_ids.append(j.id)
+        if expired_ids:
+            self._store.jobs = [j for j in self._store.jobs if j.id not in expired_ids]
+
         due_jobs = [
             j for j in self._store.jobs
             if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
@@ -273,7 +304,19 @@ class CronService:
                 job.state.next_run_at_ms = None
         else:
             # Compute next run
-            job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
+            next_run = _compute_next_run(job.schedule, _now_ms())
+
+            # Check end_at_ms: if the next run would be after the end time,
+            # disable or delete the job instead of scheduling it.
+            if next_run and job.schedule.end_at_ms and next_run > job.schedule.end_at_ms:
+                logger.info("Cron: job '{}' reached end time, disabling", job.name)
+                if job.delete_after_run:
+                    self._store.jobs = [j for j in self._store.jobs if j.id != job.id]
+                else:
+                    job.enabled = False
+                    job.state.next_run_at_ms = None
+            else:
+                job.state.next_run_at_ms = next_run
 
     # ========== Public API ==========
 

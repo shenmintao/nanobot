@@ -1,6 +1,9 @@
 /**
  * WhatsApp client wrapper using Baileys.
  * Based on OpenClaw's working implementation.
+ *
+ * Supports: text, media send/receive, reactions, typing indicators,
+ * quoted replies, stickers, polls, and voice messages.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -16,7 +19,7 @@ import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 export interface MediaAttachment {
   mimetype: string;
@@ -31,6 +34,9 @@ export interface InboundMessage {
   timestamp: number;
   isGroup: boolean;
   media?: MediaAttachment[];
+  /** Quoted/replied message info */
+  quotedMessageId?: string;
+  quotedText?: string;
 }
 
 export interface WhatsAppClientOptions {
@@ -136,6 +142,8 @@ export class WhatsAppClient {
           timestamp: msg.messageTimestamp as number,
           isGroup,
           media: extracted.media,
+          quotedMessageId: extracted.quotedMessageId,
+          quotedText: extracted.quotedText,
         });
       }
     });
@@ -151,6 +159,7 @@ export class WhatsAppClient {
         message?.videoMessage?.mimetype ||
         message?.audioMessage?.mimetype ||
         message?.documentMessage?.mimetype ||
+        message?.stickerMessage?.mimetype ||
         'application/octet-stream';
       return {
         mimetype,
@@ -162,7 +171,34 @@ export class WhatsAppClient {
     }
   }
 
-  private async extractMessageContent(msg: any): Promise<{ content: string; media?: MediaAttachment[] } | null> {
+  /**
+   * Extract quoted message context from contextInfo.
+   */
+  private extractQuotedInfo(contextInfo: any): { quotedMessageId?: string; quotedText?: string } {
+    if (!contextInfo) return {};
+    const quotedMsg = contextInfo.quotedMessage;
+    const quotedId = contextInfo.stanzaId || '';
+    let quotedText = '';
+    if (quotedMsg) {
+      quotedText =
+        quotedMsg.conversation ||
+        quotedMsg.extendedTextMessage?.text ||
+        quotedMsg.imageMessage?.caption ||
+        quotedMsg.videoMessage?.caption ||
+        '';
+    }
+    return {
+      quotedMessageId: quotedId || undefined,
+      quotedText: quotedText || undefined,
+    };
+  }
+
+  private async extractMessageContent(msg: any): Promise<{
+    content: string;
+    media?: MediaAttachment[];
+    quotedMessageId?: string;
+    quotedText?: string;
+  } | null> {
     const message = msg.message;
     if (!message) return null;
 
@@ -173,46 +209,222 @@ export class WhatsAppClient {
 
     // Extended text (reply, link preview)
     if (message.extendedTextMessage?.text) {
-      return { content: message.extendedTextMessage.text };
+      const quoted = this.extractQuotedInfo(message.extendedTextMessage.contextInfo);
+      return {
+        content: message.extendedTextMessage.text,
+        ...quoted,
+      };
     }
 
     // Image message (with or without caption)
     if (message.imageMessage) {
       const caption = message.imageMessage.caption || '';
       const media = await this.downloadMedia(msg);
+      const quoted = this.extractQuotedInfo(message.imageMessage.contextInfo);
       return {
         content: caption ? `[Image] ${caption}` : '[Image]',
         media: media ? [media] : undefined,
+        ...quoted,
       };
     }
 
     // Video with caption
     if (message.videoMessage) {
       const caption = message.videoMessage.caption || '';
-      return { content: caption ? `[Video] ${caption}` : '[Video]' };
+      const media = await this.downloadMedia(msg);
+      return {
+        content: caption ? `[Video] ${caption}` : '[Video]',
+        media: media ? [media] : undefined,
+      };
     }
 
     // Document with caption
     if (message.documentMessage) {
       const caption = message.documentMessage.caption || '';
-      return { content: caption ? `[Document] ${caption}` : '[Document]' };
+      const media = await this.downloadMedia(msg);
+      return {
+        content: caption ? `[Document] ${caption}` : '[Document]',
+        media: media ? [media] : undefined,
+      };
     }
 
-    // Voice/Audio message
+    // Voice/Audio message — download for transcription
     if (message.audioMessage) {
-      return { content: '[Voice Message]' };
+      const media = await this.downloadMedia(msg);
+      return {
+        content: '[Voice Message]',
+        media: media ? [media] : undefined,
+      };
+    }
+
+    // Sticker message — download for Vision understanding
+    if (message.stickerMessage) {
+      const media = await this.downloadMedia(msg);
+      const isAnimated = message.stickerMessage.isAnimated || false;
+      return {
+        content: isAnimated ? '[Animated Sticker]' : '[Sticker]',
+        media: media ? [media] : undefined,
+      };
+    }
+
+    // Reaction message
+    if (message.reactionMessage) {
+      const emoji = message.reactionMessage.text || '';
+      const targetId = message.reactionMessage.key?.id || '';
+      return {
+        content: emoji
+          ? `[Reaction: ${emoji}] (to message: ${targetId})`
+          : `[Reaction removed] (from message: ${targetId})`,
+      };
+    }
+
+    // Poll creation message
+    if (message.pollCreationMessage || message.pollCreationMessageV3) {
+      const poll = message.pollCreationMessage || message.pollCreationMessageV3;
+      const name = poll.name || '';
+      const options = (poll.options || []).map((o: any) => o.optionName).join(', ');
+      return {
+        content: `[Poll: ${name}] Options: ${options}`,
+      };
+    }
+
+    // Poll update (vote)
+    if (message.pollUpdateMessage) {
+      return {
+        content: '[Poll Vote Update]',
+      };
     }
 
     return null;
   }
 
-  async sendMessage(to: string, text: string): Promise<void> {
+  // ===========================================================================
+  // Outbound: Send text message (with optional quote)
+  // ===========================================================================
+
+  async sendMessage(to: string, text: string, quotedMsgId?: string): Promise<void> {
     if (!this.sock) {
       throw new Error('Not connected');
     }
 
-    await this.sock.sendMessage(to, { text });
+    const msg: any = { text };
+    if (quotedMsgId) {
+      msg.quoted = {
+        key: { remoteJid: to, id: quotedMsgId },
+        message: { conversation: '' },
+      };
+    }
+    await this.sock.sendMessage(to, msg);
   }
+
+  // ===========================================================================
+  // Outbound: Send media (image, video, audio, document)
+  // ===========================================================================
+
+  async sendMedia(
+    to: string,
+    mediaBase64: string,
+    mimetype: string,
+    caption?: string,
+    filename?: string,
+    ptt?: boolean,
+  ): Promise<void> {
+    if (!this.sock) throw new Error('Not connected');
+
+    const buffer = Buffer.from(mediaBase64, 'base64');
+
+    if (mimetype.startsWith('image/')) {
+      await this.sock.sendMessage(to, {
+        image: buffer,
+        caption: caption || undefined,
+        mimetype,
+      });
+    } else if (mimetype.startsWith('video/')) {
+      await this.sock.sendMessage(to, {
+        video: buffer,
+        caption: caption || undefined,
+        mimetype,
+      });
+    } else if (mimetype.startsWith('audio/')) {
+      await this.sock.sendMessage(to, {
+        audio: buffer,
+        mimetype,
+        ptt: ptt ?? mimetype.includes('ogg'),
+      });
+    } else {
+      await this.sock.sendMessage(to, {
+        document: buffer,
+        mimetype,
+        fileName: filename || 'file',
+      });
+    }
+  }
+
+  // ===========================================================================
+  // Outbound: Send reaction
+  // ===========================================================================
+
+  async sendReaction(to: string, messageId: string, emoji: string): Promise<void> {
+    if (!this.sock) throw new Error('Not connected');
+    await this.sock.sendMessage(to, {
+      react: {
+        text: emoji, // empty string = remove reaction
+        key: {
+          remoteJid: to,
+          id: messageId,
+        },
+      },
+    });
+  }
+
+  // ===========================================================================
+  // Outbound: Typing / presence indicator
+  // ===========================================================================
+
+  async sendPresence(to: string, type: 'composing' | 'paused' | 'available'): Promise<void> {
+    if (!this.sock) return;
+    try {
+      await this.sock.sendPresenceUpdate(type, to);
+    } catch (err) {
+      console.error('Failed to send presence:', err);
+    }
+  }
+
+  // ===========================================================================
+  // Outbound: Send sticker
+  // ===========================================================================
+
+  async sendSticker(to: string, stickerBase64: string): Promise<void> {
+    if (!this.sock) throw new Error('Not connected');
+    const buffer = Buffer.from(stickerBase64, 'base64');
+    await this.sock.sendMessage(to, {
+      sticker: buffer,
+    });
+  }
+
+  // ===========================================================================
+  // Outbound: Send poll
+  // ===========================================================================
+
+  async sendPoll(
+    to: string,
+    name: string,
+    options: string[],
+    selectableCount: number = 1,
+  ): Promise<void> {
+    if (!this.sock) throw new Error('Not connected');
+    await this.sock.sendMessage(to, {
+      poll: {
+        name,
+        values: options,
+        selectableCount,
+      },
+    });
+  }
+
+  // ===========================================================================
+  // Disconnect
+  // ===========================================================================
 
   async disconnect(): Promise<void> {
     if (this.sock) {

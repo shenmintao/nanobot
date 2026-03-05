@@ -1,21 +1,87 @@
 /**
  * WebSocket server for Python-Node.js bridge communication.
  * Security: binds to 127.0.0.1 only; optional BRIDGE_TOKEN auth.
+ *
+ * Supported commands from Python:
+ *   - send: Send text message (with optional quote)
+ *   - send_media: Send image/video/audio/document
+ *   - react: Send emoji reaction
+ *   - presence: Send typing indicator
+ *   - send_sticker: Send a sticker
+ *   - send_poll: Send a poll
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { WhatsAppClient, InboundMessage } from './whatsapp.js';
 
+// ---------------------------------------------------------------------------
+// Command types from Python
+// ---------------------------------------------------------------------------
+
 interface SendCommand {
   type: 'send';
   to: string;
   text: string;
+  quotedMsgId?: string;
 }
 
+interface SendMediaCommand {
+  type: 'send_media';
+  to: string;
+  base64: string;
+  mimetype: string;
+  caption?: string;
+  filename?: string;
+  ptt?: boolean;
+}
+
+interface ReactCommand {
+  type: 'react';
+  to: string;
+  messageId: string;
+  emoji: string;
+}
+
+interface PresenceCommand {
+  type: 'presence';
+  to: string;
+  presenceType: 'composing' | 'paused' | 'available';
+}
+
+interface SendStickerCommand {
+  type: 'send_sticker';
+  to: string;
+  base64: string;
+}
+
+interface SendPollCommand {
+  type: 'send_poll';
+  to: string;
+  name: string;
+  options: string[];
+  selectableCount?: number;
+}
+
+type BridgeCommand =
+  | SendCommand
+  | SendMediaCommand
+  | ReactCommand
+  | PresenceCommand
+  | SendStickerCommand
+  | SendPollCommand;
+
+// ---------------------------------------------------------------------------
+// Bridge message types to Python
+// ---------------------------------------------------------------------------
+
 interface BridgeMessage {
-  type: 'message' | 'status' | 'qr' | 'error';
+  type: 'message' | 'status' | 'qr' | 'error' | 'sent';
   [key: string]: unknown;
 }
+
+// ---------------------------------------------------------------------------
+// Bridge Server
+// ---------------------------------------------------------------------------
 
 export class BridgeServer {
   private wss: WebSocketServer | null = null;
@@ -72,9 +138,9 @@ export class BridgeServer {
 
     ws.on('message', async (data) => {
       try {
-        const cmd = JSON.parse(data.toString()) as SendCommand;
+        const cmd = JSON.parse(data.toString()) as BridgeCommand;
         await this.handleCommand(cmd);
-        ws.send(JSON.stringify({ type: 'sent', to: cmd.to }));
+        ws.send(JSON.stringify({ type: 'sent', commandType: cmd.type, to: (cmd as any).to }));
       } catch (error) {
         console.error('Error handling command:', error);
         ws.send(JSON.stringify({ type: 'error', error: String(error) }));
@@ -92,9 +158,45 @@ export class BridgeServer {
     });
   }
 
-  private async handleCommand(cmd: SendCommand): Promise<void> {
-    if (cmd.type === 'send' && this.wa) {
-      await this.wa.sendMessage(cmd.to, cmd.text);
+  private async handleCommand(cmd: BridgeCommand): Promise<void> {
+    if (!this.wa) {
+      throw new Error('WhatsApp client not initialized');
+    }
+
+    switch (cmd.type) {
+      case 'send':
+        await this.wa.sendMessage(cmd.to, cmd.text, cmd.quotedMsgId);
+        break;
+
+      case 'send_media':
+        await this.wa.sendMedia(
+          cmd.to,
+          cmd.base64,
+          cmd.mimetype,
+          cmd.caption,
+          cmd.filename,
+          cmd.ptt,
+        );
+        break;
+
+      case 'react':
+        await this.wa.sendReaction(cmd.to, cmd.messageId, cmd.emoji);
+        break;
+
+      case 'presence':
+        await this.wa.sendPresence(cmd.to, cmd.presenceType);
+        break;
+
+      case 'send_sticker':
+        await this.wa.sendSticker(cmd.to, cmd.base64);
+        break;
+
+      case 'send_poll':
+        await this.wa.sendPoll(cmd.to, cmd.name, cmd.options, cmd.selectableCount ?? 1);
+        break;
+
+      default:
+        console.warn('Unknown command type:', (cmd as any).type);
     }
   }
 
