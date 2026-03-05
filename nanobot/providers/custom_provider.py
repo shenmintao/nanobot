@@ -9,13 +9,20 @@ from openai import AsyncOpenAI
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
+# Default User-Agent to avoid Cloudflare 403 blocks on relay/proxy endpoints.
+_DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 
 class CustomProvider(LLMProvider):
 
     def __init__(self, api_key: str = "no-key", api_base: str = "http://localhost:8000/v1", default_model: str = "default"):
         super().__init__(api_key, api_base)
         self.default_model = default_model
-        self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=api_base,
+            default_headers={"User-Agent": _DEFAULT_USER_AGENT},
+        )
 
     async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
                    model: str | None = None, max_tokens: int = 4096, temperature: float = 0.7,

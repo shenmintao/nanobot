@@ -31,6 +31,9 @@ class LiteLLMProvider(LLMProvider):
     (see providers/registry.py) — no if-elif chains needed here.
     """
 
+    # Default User-Agent to avoid Cloudflare 403 blocks on relay/proxy endpoints.
+    _DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -42,6 +45,8 @@ class LiteLLMProvider(LLMProvider):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
+        # Ensure a User-Agent is always present to prevent Cloudflare 403 blocks
+        self.extra_headers.setdefault("User-Agent", self._DEFAULT_USER_AGENT)
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
