@@ -494,9 +494,16 @@ class AgentLoop:
                 rate=tts_config.rate,
                 pitch=tts_config.pitch,
             )
-            # Strip sticker and voice tags from text before TTS
+            # Strip tags, RP action descriptions, and quotes from text before TTS
             clean_text = re.sub(r'\[sticker:[^\]]+\]', '', text)
-            clean_text = self._VOICE_TAG_RE.sub('', clean_text).strip()
+            clean_text = self._VOICE_TAG_RE.sub('', clean_text)
+            # Remove RP action descriptions in parentheses: （动作描述） or (action desc)
+            clean_text = re.sub(r'[（(][^）)]*[）)]', '', clean_text)
+            # Remove asterisk-wrapped actions: *动作描述*
+            clean_text = re.sub(r'\*[^*]+\*', '', clean_text)
+            # Remove leading/trailing quotes used as dialogue markers: "..." or "..."
+            clean_text = re.sub(r'["""]', '', clean_text)
+            clean_text = clean_text.strip()
             if not clean_text:
                 logger.debug("TTS skipped: no text after stripping tags")
                 return
@@ -725,10 +732,12 @@ class AgentLoop:
                 if response is not None:
                     # WhatsApp: extract and send stickers, strip [voice] tags before text reply
                     original_content = response.content
+                    has_voice_tag = False
                     if msg.channel == "whatsapp" and response.content:
                         # 1. Send stickers and strip [sticker:xxx] tags
                         cleaned = await self._send_stickers_from_response(msg, response.content)
-                        # 2. Strip [voice] tags from text (they are only a signal for TTS)
+                        # 2. Check for [voice] tag and strip it
+                        has_voice_tag = bool(self._VOICE_TAG_RE.search(cleaned))
                         cleaned = self._VOICE_TAG_RE.sub('', cleaned).strip()
                         if cleaned != response.content:
                             response = OutboundMessage(
@@ -740,8 +749,8 @@ class AgentLoop:
                                 metadata=response.metadata,
                             )
 
-                    # Send text reply (may be empty if only stickers)
-                    if response.content:
+                    # Send text reply — skip if [voice] tag present (voice-only mode)
+                    if response.content and not has_voice_tag:
                         await self.bus.publish_outbound(response)
 
                     # WhatsApp enhancements (non-blocking)
