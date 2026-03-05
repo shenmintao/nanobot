@@ -1,8 +1,10 @@
 """WhatsApp channel implementation using Node.js bridge."""
 
 import asyncio
+import base64
 import json
 from collections import OrderedDict
+from pathlib import Path
 
 from loguru import logger
 
@@ -92,6 +94,21 @@ class WhatsAppChannel(BaseChannel):
         except Exception as e:
             logger.error("Error sending WhatsApp message: {}", e)
 
+    @staticmethod
+    def _mime_to_ext(mimetype: str) -> str:
+        """Map MIME type to file extension."""
+        ext_map = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "audio/ogg": ".ogg",
+            "audio/mpeg": ".mp3",
+            "audio/mp4": ".m4a",
+            "video/mp4": ".mp4",
+        }
+        return ext_map.get(mimetype, ".bin")
+
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a message from the bridge."""
         try:
@@ -128,10 +145,35 @@ class WhatsAppChannel(BaseChannel):
                 logger.info("Voice message received from {}, but direct download from bridge is not yet supported.", sender_id)
                 content = "[Voice Message: Transcription not available for WhatsApp yet]"
 
+            # Save media attachments (images etc.) from bridge to local files
+            media_paths: list[str] = []
+            for attachment in data.get("media", []):
+                try:
+                    mimetype = attachment.get("mimetype", "application/octet-stream")
+                    b64_data = attachment.get("base64", "")
+                    if not b64_data:
+                        continue
+
+                    ext = self._mime_to_ext(mimetype)
+                    media_dir = Path.home() / ".nanobot" / "media"
+                    media_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Use message_id + index for unique filename
+                    file_id = message_id[:16] if message_id else "unknown"
+                    idx = len(media_paths)
+                    file_path = media_dir / f"wa_{file_id}_{idx}{ext}"
+
+                    file_path.write_bytes(base64.b64decode(b64_data))
+                    media_paths.append(str(file_path))
+                    logger.debug("Saved WhatsApp media to {}", file_path)
+                except Exception as e:
+                    logger.error("Failed to save WhatsApp media: {}", e)
+
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
+                media=media_paths if media_paths else None,
                 metadata={
                     "message_id": message_id,
                     "timestamp": data.get("timestamp"),

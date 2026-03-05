@@ -9,6 +9,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys';
 
 import { Boom } from '@hapi/boom';
@@ -17,6 +18,11 @@ import pino from 'pino';
 
 const VERSION = '0.1.0';
 
+export interface MediaAttachment {
+  mimetype: string;
+  base64: string;
+}
+
 export interface InboundMessage {
   id: string;
   sender: string;
@@ -24,6 +30,7 @@ export interface InboundMessage {
   content: string;
   timestamp: number;
   isGroup: boolean;
+  media?: MediaAttachment[];
 }
 
 export interface WhatsAppClientOptions {
@@ -116,8 +123,8 @@ export class WhatsAppClient {
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
-        const content = this.extractMessageContent(msg);
-        if (!content) continue;
+        const extracted = await this.extractMessageContent(msg);
+        if (!extracted) continue;
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
@@ -125,46 +132,75 @@ export class WhatsAppClient {
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
           pn: msg.key.remoteJidAlt || '',
-          content,
+          content: extracted.content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
+          media: extracted.media,
         });
       }
     });
   }
 
-  private extractMessageContent(msg: any): string | null {
+  private async downloadMedia(msg: any): Promise<MediaAttachment | null> {
+    try {
+      const buffer = await downloadMediaMessage(msg, 'buffer', {});
+      if (!buffer) return null;
+      const message = msg.message;
+      const mimetype =
+        message?.imageMessage?.mimetype ||
+        message?.videoMessage?.mimetype ||
+        message?.audioMessage?.mimetype ||
+        message?.documentMessage?.mimetype ||
+        'application/octet-stream';
+      return {
+        mimetype,
+        base64: (buffer as Buffer).toString('base64'),
+      };
+    } catch (err) {
+      console.error('Failed to download media:', err);
+      return null;
+    }
+  }
+
+  private async extractMessageContent(msg: any): Promise<{ content: string; media?: MediaAttachment[] } | null> {
     const message = msg.message;
     if (!message) return null;
 
     // Text message
     if (message.conversation) {
-      return message.conversation;
+      return { content: message.conversation };
     }
 
     // Extended text (reply, link preview)
     if (message.extendedTextMessage?.text) {
-      return message.extendedTextMessage.text;
+      return { content: message.extendedTextMessage.text };
     }
 
-    // Image with caption
-    if (message.imageMessage?.caption) {
-      return `[Image] ${message.imageMessage.caption}`;
+    // Image message (with or without caption)
+    if (message.imageMessage) {
+      const caption = message.imageMessage.caption || '';
+      const media = await this.downloadMedia(msg);
+      return {
+        content: caption ? `[Image] ${caption}` : '[Image]',
+        media: media ? [media] : undefined,
+      };
     }
 
     // Video with caption
-    if (message.videoMessage?.caption) {
-      return `[Video] ${message.videoMessage.caption}`;
+    if (message.videoMessage) {
+      const caption = message.videoMessage.caption || '';
+      return { content: caption ? `[Video] ${caption}` : '[Video]' };
     }
 
     // Document with caption
-    if (message.documentMessage?.caption) {
-      return `[Document] ${message.documentMessage.caption}`;
+    if (message.documentMessage) {
+      const caption = message.documentMessage.caption || '';
+      return { content: caption ? `[Document] ${caption}` : '[Document]' };
     }
 
     // Voice/Audio message
     if (message.audioMessage) {
-      return `[Voice Message]`;
+      return { content: '[Voice Message]' };
     }
 
     return null;
