@@ -56,7 +56,7 @@ companion = [
     "lunardate>=0.2.2,<1.0.0",
     "pdfplumber>=0.11.0,<1.0.0",
     "python-docx>=1.1.0,<2.0.0",
-    "edge-tts>=6.1.0,<7.0.0",
+    "edge-tts>=7.0.0,<8.0.0",
     "Pillow>=10.0.0,<12.0.0",
 ]
 dev = [
