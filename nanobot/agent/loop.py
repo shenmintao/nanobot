@@ -575,12 +575,34 @@ class AgentLoop:
         return cleaned
 
     @staticmethod
+    def _emoji_to_twemoji_url(emoji_char: str) -> str | None:
+        """Convert an emoji character to a Twemoji CDN URL.
+
+        Args:
+            emoji_char: A single emoji character or sequence (e.g. "😊").
+
+        Returns:
+            URL to the Twemoji SVG, or None if not a valid emoji.
+        """
+        # Convert emoji to code points, skipping variation selectors (FE0F)
+        codepoints = []
+        for ch in emoji_char:
+            cp = ord(ch)
+            if cp == 0xFE0F:
+                continue  # Skip variation selector
+            codepoints.append(f"{cp:x}")
+        if not codepoints:
+            return None
+        filename = "-".join(codepoints)
+        return f"https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/svg/{filename}.svg"
+
+    @staticmethod
     async def _generate_emoji_sticker(emoji_or_desc: str) -> str | None:
         """Generate a sticker WebP image from an emoji character.
 
-        Uses Pillow to render the emoji as a 512x512 WebP image suitable for
-        WhatsApp stickers. Falls back to a text-based sticker if emoji rendering
-        is not available.
+        Downloads the emoji as a high-quality SVG/PNG from Twemoji CDN,
+        then converts to a 512x512 WebP image suitable for WhatsApp stickers.
+        Falls back to Pillow font rendering if download fails.
 
         Args:
             emoji_or_desc: An emoji character (e.g. "😊") or short description.
@@ -588,33 +610,67 @@ class AgentLoop:
         Returns:
             Path to the generated WebP sticker file, or None on failure.
         """
+        import aiohttp
+
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image
         except ImportError:
             logger.warning("Sticker generation requires Pillow: pip install Pillow")
             return None
 
+        sticker_path = tempfile.mktemp(suffix=".webp", prefix="nanobot_sticker_")
+
+        # --- Strategy 1: Download from Twemoji CDN ---
         try:
-            # Create 512x512 transparent image
+            # Build Twemoji URL
+            codepoints = []
+            for ch in emoji_or_desc.strip():
+                cp = ord(ch)
+                if cp == 0xFE0F:
+                    continue
+                codepoints.append(f"{cp:x}")
+
+            if codepoints:
+                filename = "-".join(codepoints)
+                # Try PNG first (72x72), then SVG
+                png_url = f"https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/{filename}.png"
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(png_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            png_data = await resp.read()
+                            # Open PNG and resize to 512x512 with high quality
+                            import io
+                            emoji_img = Image.open(io.BytesIO(png_data)).convert("RGBA")
+                            # Resize to 512x512 with LANCZOS for best quality
+                            emoji_img = emoji_img.resize((512, 512), Image.LANCZOS)
+                            emoji_img.save(sticker_path, 'WEBP', quality=95)
+
+                            if Path(sticker_path).exists() and Path(sticker_path).stat().st_size > 0:
+                                logger.debug("Sticker generated from Twemoji CDN: {}", emoji_or_desc)
+                                return sticker_path
+                        else:
+                            logger.debug("Twemoji CDN returned {}: {}", resp.status, png_url)
+        except Exception as e:
+            logger.debug("Twemoji download failed, falling back to font rendering: {}", e)
+
+        # --- Strategy 2: Fallback to Pillow font rendering ---
+        try:
+            from PIL import ImageDraw, ImageFont
+
             img = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
 
-            # Try to use a system emoji font for rendering
             text = emoji_or_desc
             font_size = 256 if len(text) <= 2 else 128
             font = None
 
-            # Try common emoji font paths
             emoji_font_paths = [
-                # Linux
                 "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
                 "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
                 "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
-                # macOS
                 "/System/Library/Fonts/Apple Color Emoji.ttc",
-                # Windows
                 "C:/Windows/Fonts/seguiemj.ttf",
-                # Fallback: any CJK font for text descriptions
                 "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
                 "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
                 "/System/Library/Fonts/PingFang.ttc",
@@ -630,27 +686,20 @@ class AgentLoop:
                         continue
 
             if font is None:
-                # Use default font (very small, but works)
                 font = ImageFont.load_default()
-                font_size = 20
 
-            # Calculate text position (center)
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             x = (512 - text_width) // 2
             y = (512 - text_height) // 2
 
-            # Draw text (embedded_color for color emoji fonts, with fallback)
             try:
                 draw.text((x, y), text, font=font, fill=(255, 255, 255, 255),
                           embedded_color=True)
             except TypeError:
-                # Older Pillow versions don't support embedded_color
                 draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
 
-            # Save as WebP
-            sticker_path = tempfile.mktemp(suffix=".webp", prefix="nanobot_sticker_")
             img.save(sticker_path, 'WEBP', quality=90)
 
             if Path(sticker_path).exists() and Path(sticker_path).stat().st_size > 0:
