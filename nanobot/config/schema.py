@@ -21,7 +21,13 @@ class TTSConfig(Base):
     voice: str = "zh-CN-XiaoxiaoNeural"  # Edge TTS voice name or preset key
     rate: str = "+0%"  # Speech rate adjustment
     pitch: str = "+0Hz"  # Pitch adjustment
-    mode: str = "mirror"  # "mirror" = reply voice when user sends voice, "always" = always send voice, "never" = disabled
+    mode: str = "auto"  # "auto" = LLM decides via [voice] tag, "mirror" = reply voice when user sends voice, "always" = always send voice
+
+
+class StickerConfig(Base):
+    """Sticker sending configuration for WhatsApp."""
+
+    enabled: bool = True  # Enable sticker sending (LLM uses [sticker:emoji] tags)
 
 
 class WhatsAppConfig(Base):
@@ -32,6 +38,7 @@ class WhatsAppConfig(Base):
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
     allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
     tts: TTSConfig = Field(default_factory=TTSConfig)  # TTS configuration
+    sticker: StickerConfig = Field(default_factory=StickerConfig)  # Sticker configuration
     debounce_seconds: float = 2.0  # Message debounce delay in seconds
     auto_reaction: bool = True  # Auto-react to messages based on emotion analysis
 

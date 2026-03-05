@@ -126,6 +126,17 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         lines = [f"Current Time: {now} ({tz})"]
         if channel and chat_id:
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
+        # WhatsApp-specific capabilities hint
+        if channel == "whatsapp":
+            lines.append(
+                "\n## WhatsApp 特殊能力\n"
+                "- 发送表情包：在回复中使用 [sticker:😊] 或 [sticker:❤️] 标记，系统会自动将 emoji 渲染为 WhatsApp 贴纸发送。"
+                "适合在表达情感、打招呼、庆祝等场景使用。可以和文字混合使用，例如：'早上好！[sticker:🌅]'\n"
+                "- 语音回复：在回复中加入 [voice] 标记，系统会将你的文字回复同时转为语音消息发送。"
+                "适合在安慰、鼓励、晚安问候等温馨场景使用。[voice] 标记不会显示给用户。"
+                "例如：'晚安，做个好梦 [voice]'\n"
+                "注意：不要每条消息都发语音或表情包，根据对话情境自然地使用。"
+            )
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
 
     def _load_bootstrap_files(self) -> str:

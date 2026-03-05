@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 import weakref
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -441,48 +442,224 @@ class AgentLoop:
         except Exception:
             logger.debug("Auto-reaction failed", exc_info=True)
 
+    # Regex to detect [voice] tag in LLM response (for auto mode)
+    _VOICE_TAG_RE = re.compile(r'\[voice\]', re.IGNORECASE)
+
     async def _send_tts_voice(self, msg: InboundMessage, text: str) -> None:
-        """Send TTS voice message for WhatsApp if configured."""
+        """Send TTS voice message for WhatsApp if configured.
+
+        Supports three modes:
+        - "auto": LLM decides by including [voice] tag in response
+        - "mirror": reply with voice only when user sent a voice message
+        - "always": always send voice with text reply
+        """
         if msg.channel != "whatsapp":
             return
 
         # Check TTS config
         if not self.channels_config:
+            logger.debug("TTS skipped: no channels_config")
             return
         wa_config = getattr(self.channels_config, 'whatsapp', None)
         if not wa_config:
+            logger.debug("TTS skipped: no whatsapp config")
             return
         tts_config = getattr(wa_config, 'tts', None)
         if not tts_config or not tts_config.enabled:
+            logger.debug("TTS skipped: tts not enabled (enabled={})", getattr(tts_config, 'enabled', None))
             return
 
         # Determine if we should send voice
         is_voice_reply = "[语音转文字]" in msg.content
+        has_voice_tag = bool(self._VOICE_TAG_RE.search(text))
         should_send = (
             tts_config.mode == "always"
             or (tts_config.mode == "mirror" and is_voice_reply)
+            or (tts_config.mode == "auto" and has_voice_tag)
         )
         if not should_send:
+            logger.debug("TTS skipped: mode={}, is_voice_reply={}, has_voice_tag={}", tts_config.mode, is_voice_reply, has_voice_tag)
             return
 
         wa = self._get_whatsapp_channel()
         if not wa:
+            logger.warning("TTS skipped: WhatsApp channel not available (channel_manager not set?)")
             return
 
         try:
             from nanobot.providers.tts import EdgeTTSProvider
+            logger.info("TTS: synthesizing voice (voice={}, mode={})", tts_config.voice, tts_config.mode)
             tts = EdgeTTSProvider(
                 voice=tts_config.voice,
                 rate=tts_config.rate,
                 pitch=tts_config.pitch,
             )
+            # Strip sticker and voice tags from text before TTS
+            clean_text = re.sub(r'\[sticker:[^\]]+\]', '', text)
+            clean_text = self._VOICE_TAG_RE.sub('', clean_text).strip()
+            if not clean_text:
+                logger.debug("TTS skipped: no text after stripping tags")
+                return
             # Try OGG for WhatsApp PTT style, fallback to MP3
-            audio_path = await tts.synthesize(text, output_format="ogg")
+            audio_path = await tts.synthesize(clean_text, output_format="ogg")
             if audio_path:
                 await wa._send_media_file(msg.chat_id, audio_path, ptt=True)
-                logger.debug("Sent TTS voice message to {}", msg.chat_id)
+                logger.info("Sent TTS voice message to {}", msg.chat_id)
+                # Clean up temp file
+                try:
+                    Path(audio_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            else:
+                logger.warning("TTS synthesis returned no audio file")
+        except ImportError:
+            logger.warning("TTS failed: edge-tts not installed. Install with: pip install edge-tts")
         except Exception:
-            logger.debug("TTS voice send failed", exc_info=True)
+            logger.warning("TTS voice send failed", exc_info=True)
+
+    # =========================================================================
+    # Sticker sending from LLM response
+    # =========================================================================
+
+    # Regex to match [sticker:emoji_or_description] tags in LLM responses
+    _STICKER_TAG_RE = re.compile(r'\[sticker:([^\]]+)\]')
+
+    async def _send_stickers_from_response(self, msg: InboundMessage, text: str) -> str:
+        """Extract [sticker:xxx] tags from response, send as stickers, return cleaned text.
+
+        The LLM can include [sticker:😊] or [sticker:开心的猫] in its response.
+        This method extracts those tags, generates sticker images, sends them,
+        and returns the text with sticker tags removed.
+        """
+        if msg.channel != "whatsapp":
+            return text
+
+        # Check sticker config
+        if self.channels_config:
+            wa_config = getattr(self.channels_config, 'whatsapp', None)
+            if wa_config:
+                sticker_config = getattr(wa_config, 'sticker', None)
+                if sticker_config and not sticker_config.enabled:
+                    # Sticker disabled — just strip tags
+                    return self._STICKER_TAG_RE.sub('', text).strip()
+
+        matches = self._STICKER_TAG_RE.findall(text)
+        if not matches:
+            return text
+
+        wa = self._get_whatsapp_channel()
+        if not wa:
+            return text
+
+        for sticker_desc in matches:
+            sticker_desc = sticker_desc.strip()
+            if not sticker_desc:
+                continue
+            try:
+                sticker_path = await self._generate_emoji_sticker(sticker_desc)
+                if sticker_path:
+                    await wa.send_sticker(msg.chat_id, sticker_path)
+                    logger.info("Sent sticker [{}] to {}", sticker_desc, msg.chat_id)
+                    # Clean up temp file
+                    try:
+                        Path(sticker_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    logger.debug("Sticker generation returned None for: {}", sticker_desc)
+            except Exception:
+                logger.warning("Failed to send sticker [{}]", sticker_desc, exc_info=True)
+
+        # Remove sticker tags from text
+        cleaned = self._STICKER_TAG_RE.sub('', text).strip()
+        return cleaned
+
+    @staticmethod
+    async def _generate_emoji_sticker(emoji_or_desc: str) -> str | None:
+        """Generate a sticker WebP image from an emoji character.
+
+        Uses Pillow to render the emoji as a 512x512 WebP image suitable for
+        WhatsApp stickers. Falls back to a text-based sticker if emoji rendering
+        is not available.
+
+        Args:
+            emoji_or_desc: An emoji character (e.g. "😊") or short description.
+
+        Returns:
+            Path to the generated WebP sticker file, or None on failure.
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            logger.warning("Sticker generation requires Pillow: pip install Pillow")
+            return None
+
+        try:
+            # Create 512x512 transparent image
+            img = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+
+            # Try to use a system emoji font for rendering
+            text = emoji_or_desc
+            font_size = 256 if len(text) <= 2 else 128
+            font = None
+
+            # Try common emoji font paths
+            emoji_font_paths = [
+                # Linux
+                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+                "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
+                # macOS
+                "/System/Library/Fonts/Apple Color Emoji.ttc",
+                # Windows
+                "C:/Windows/Fonts/seguiemj.ttf",
+                # Fallback: any CJK font for text descriptions
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                "/System/Library/Fonts/PingFang.ttc",
+                "C:/Windows/Fonts/msyh.ttc",
+            ]
+
+            for font_path in emoji_font_paths:
+                if Path(font_path).exists():
+                    try:
+                        font = ImageFont.truetype(font_path, font_size)
+                        break
+                    except Exception:
+                        continue
+
+            if font is None:
+                # Use default font (very small, but works)
+                font = ImageFont.load_default()
+                font_size = 20
+
+            # Calculate text position (center)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            x = (512 - text_width) // 2
+            y = (512 - text_height) // 2
+
+            # Draw text (embedded_color for color emoji fonts, with fallback)
+            try:
+                draw.text((x, y), text, font=font, fill=(255, 255, 255, 255),
+                          embedded_color=True)
+            except TypeError:
+                # Older Pillow versions don't support embedded_color
+                draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+
+            # Save as WebP
+            sticker_path = tempfile.mktemp(suffix=".webp", prefix="nanobot_sticker_")
+            img.save(sticker_path, 'WEBP', quality=90)
+
+            if Path(sticker_path).exists() and Path(sticker_path).stat().st_size > 0:
+                return sticker_path
+
+            return None
+        except Exception as e:
+            logger.warning("Sticker generation failed: {}", e)
+            return None
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
@@ -497,14 +674,33 @@ class AgentLoop:
                 await self._send_typing_indicator(msg, composing=False)
 
                 if response is not None:
-                    await self.bus.publish_outbound(response)
+                    # WhatsApp: extract and send stickers, strip [voice] tags before text reply
+                    original_content = response.content
+                    if msg.channel == "whatsapp" and response.content:
+                        # 1. Send stickers and strip [sticker:xxx] tags
+                        cleaned = await self._send_stickers_from_response(msg, response.content)
+                        # 2. Strip [voice] tags from text (they are only a signal for TTS)
+                        cleaned = self._VOICE_TAG_RE.sub('', cleaned).strip()
+                        if cleaned != response.content:
+                            response = OutboundMessage(
+                                channel=response.channel,
+                                chat_id=response.chat_id,
+                                content=cleaned,
+                                reply_to=response.reply_to,
+                                media=response.media,
+                                metadata=response.metadata,
+                            )
+
+                    # Send text reply (may be empty if only stickers)
+                    if response.content:
+                        await self.bus.publish_outbound(response)
 
                     # WhatsApp enhancements (non-blocking)
-                    if msg.channel == "whatsapp" and response.content:
+                    if msg.channel == "whatsapp" and original_content:
                         # Auto-reaction based on emotion
                         asyncio.create_task(self._send_auto_reaction(msg))
-                        # TTS voice reply
-                        asyncio.create_task(self._send_tts_voice(msg, response.content))
+                        # TTS voice reply — pass original_content so [voice] tag can be detected
+                        asyncio.create_task(self._send_tts_voice(msg, original_content))
 
                 elif msg.channel == "cli":
                     await self.bus.publish_outbound(OutboundMessage(
