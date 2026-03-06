@@ -457,9 +457,11 @@ def gateway(
         Uses a fixed session key but clears it before each run so history
         doesn't accumulate (heartbeat tasks are self-contained) and session
         files don't pile up on disk.
-        """
-        channel, chat_id = _pick_heartbeat_target()
 
+        Uses channel="system" to avoid injecting channel-specific capabilities
+        (e.g. WhatsApp voice hints) into heartbeat task execution.
+        The actual delivery channel is only used in on_heartbeat_notify.
+        """
         # Clear previous heartbeat session to avoid history accumulation
         hb_session = session_manager.get_or_create("heartbeat")
         hb_session.clear()
@@ -471,8 +473,8 @@ def gateway(
         return await agent.process_direct(
             tasks,
             session_key="heartbeat",
-            channel=channel,
-            chat_id=chat_id,
+            channel="system",
+            chat_id="heartbeat",
             on_progress=_silent,
         )
 

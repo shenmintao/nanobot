@@ -3,7 +3,7 @@
  * Based on OpenClaw's working implementation.
  *
  * Supports: text, media send/receive, reactions, typing indicators,
- * quoted replies, stickers, polls, and voice messages.
+ * quoted replies, polls, and voice messages.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -388,18 +388,6 @@ export class WhatsAppClient {
     } catch (err) {
       console.error('Failed to send presence:', err);
     }
-  }
-
-  // ===========================================================================
-  // Outbound: Send sticker
-  // ===========================================================================
-
-  async sendSticker(to: string, stickerBase64: string): Promise<void> {
-    if (!this.sock) throw new Error('Not connected');
-    const buffer = Buffer.from(stickerBase64, 'base64');
-    await this.sock.sendMessage(to, {
-      sticker: buffer,
-    });
   }
 
   // ===========================================================================

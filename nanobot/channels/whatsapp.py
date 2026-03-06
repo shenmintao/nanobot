@@ -1,7 +1,7 @@
 """WhatsApp channel implementation using Node.js bridge.
 
 Supports: text, media send/receive, reactions, typing indicators,
-quoted replies, stickers, polls, voice transcription, and message debouncing.
+quoted replies, polls, voice transcription, and message debouncing.
 """
 
 import asyncio
@@ -200,32 +200,6 @@ class WhatsAppChannel(BaseChannel):
             await self._ws.send(json.dumps(payload))
         except Exception as e:
             logger.error("Error sending typing indicator: {}", e)
-
-    # =========================================================================
-    # Outbound: Send sticker
-    # =========================================================================
-
-    async def send_sticker(self, chat_id: str, sticker_path: str) -> None:
-        """Send a sticker (WebP image) through WhatsApp."""
-        if not self._ws or not self._connected:
-            return
-
-        try:
-            path = Path(sticker_path)
-            if not path.exists():
-                logger.warning("Sticker file not found: {}", sticker_path)
-                return
-
-            b64 = base64.b64encode(path.read_bytes()).decode()
-            payload = {
-                "type": "send_sticker",
-                "to": chat_id,
-                "base64": b64,
-            }
-            await self._ws.send(json.dumps(payload, ensure_ascii=False))
-            logger.debug("Sent sticker to {}", chat_id)
-        except Exception as e:
-            logger.error("Error sending sticker: {}", e)
 
     # =========================================================================
     # Outbound: Send poll

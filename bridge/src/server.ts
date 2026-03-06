@@ -7,7 +7,6 @@
  *   - send_media: Send image/video/audio/document
  *   - react: Send emoji reaction
  *   - presence: Send typing indicator
- *   - send_sticker: Send a sticker
  *   - send_poll: Send a poll
  */
 
@@ -48,12 +47,6 @@ interface PresenceCommand {
   presenceType: 'composing' | 'paused' | 'available';
 }
 
-interface SendStickerCommand {
-  type: 'send_sticker';
-  to: string;
-  base64: string;
-}
-
 interface SendPollCommand {
   type: 'send_poll';
   to: string;
@@ -67,7 +60,6 @@ type BridgeCommand =
   | SendMediaCommand
   | ReactCommand
   | PresenceCommand
-  | SendStickerCommand
   | SendPollCommand;
 
 // ---------------------------------------------------------------------------
@@ -185,10 +177,6 @@ export class BridgeServer {
 
       case 'presence':
         await this.wa.sendPresence(cmd.to, cmd.presenceType);
-        break;
-
-      case 'send_sticker':
-        await this.wa.sendSticker(cmd.to, cmd.base64);
         break;
 
       case 'send_poll':

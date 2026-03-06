@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import tempfile
 import weakref
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -504,8 +503,7 @@ class AgentLoop:
                 pitch=tts_config.pitch,
             )
             # Strip tags, RP action descriptions, and quotes from text before TTS
-            clean_text = re.sub(r'\[sticker:[^\]]+\]', '', text)
-            clean_text = self._VOICE_TAG_RE.sub('', clean_text)
+            clean_text = self._VOICE_TAG_RE.sub('', text)
             # Remove RP action descriptions in parentheses: （动作描述） or (action desc)
             clean_text = re.sub(r'[（(][^）)]*[）)]', '', clean_text)
             # Remove asterisk-wrapped actions: *动作描述*
@@ -533,199 +531,6 @@ class AgentLoop:
         except Exception:
             logger.warning("TTS voice send failed", exc_info=True)
 
-    # =========================================================================
-    # Sticker sending from LLM response
-    # =========================================================================
-
-    # Regex to match [sticker:emoji_or_description] tags in LLM responses
-    _STICKER_TAG_RE = re.compile(r'\[sticker:([^\]]+)\]')
-
-    async def _send_stickers_from_response(self, msg: InboundMessage, text: str) -> str:
-        """Extract [sticker:xxx] tags from response, send as stickers, return cleaned text.
-
-        The LLM can include [sticker:😊] or [sticker:开心的猫] in its response.
-        This method extracts those tags, generates sticker images, sends them,
-        and returns the text with sticker tags removed.
-        """
-        if msg.channel != "whatsapp":
-            return text
-
-        # Check sticker config
-        if self.channels_config:
-            wa_config = getattr(self.channels_config, 'whatsapp', None)
-            if wa_config:
-                sticker_config = getattr(wa_config, 'sticker', None)
-                if sticker_config and not sticker_config.enabled:
-                    # Sticker disabled — just strip tags
-                    return self._STICKER_TAG_RE.sub('', text).strip()
-
-        matches = self._STICKER_TAG_RE.findall(text)
-        if not matches:
-            return text
-
-        wa = self._get_whatsapp_channel()
-        if not wa:
-            return text
-
-        for sticker_desc in matches:
-            sticker_desc = sticker_desc.strip()
-            if not sticker_desc:
-                continue
-            try:
-                sticker_path = await self._generate_emoji_sticker(sticker_desc)
-                if sticker_path:
-                    await wa.send_sticker(msg.chat_id, sticker_path)
-                    logger.info("Sent sticker [{}] to {}", sticker_desc, msg.chat_id)
-                    # Clean up temp file
-                    try:
-                        Path(sticker_path).unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                else:
-                    logger.debug("Sticker generation returned None for: {}", sticker_desc)
-            except Exception:
-                logger.warning("Failed to send sticker [{}]", sticker_desc, exc_info=True)
-
-        # Remove sticker tags from text
-        cleaned = self._STICKER_TAG_RE.sub('', text).strip()
-        return cleaned
-
-    @staticmethod
-    def _emoji_to_twemoji_url(emoji_char: str) -> str | None:
-        """Convert an emoji character to a Twemoji CDN URL.
-
-        Args:
-            emoji_char: A single emoji character or sequence (e.g. "😊").
-
-        Returns:
-            URL to the Twemoji SVG, or None if not a valid emoji.
-        """
-        # Convert emoji to code points, skipping variation selectors (FE0F)
-        codepoints = []
-        for ch in emoji_char:
-            cp = ord(ch)
-            if cp == 0xFE0F:
-                continue  # Skip variation selector
-            codepoints.append(f"{cp:x}")
-        if not codepoints:
-            return None
-        filename = "-".join(codepoints)
-        return f"https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/svg/{filename}.svg"
-
-    @staticmethod
-    async def _generate_emoji_sticker(emoji_or_desc: str) -> str | None:
-        """Generate a sticker WebP image from an emoji character.
-
-        Downloads the emoji as a high-quality SVG/PNG from Twemoji CDN,
-        then converts to a 512x512 WebP image suitable for WhatsApp stickers.
-        Falls back to Pillow font rendering if download fails.
-
-        Args:
-            emoji_or_desc: An emoji character (e.g. "😊") or short description.
-
-        Returns:
-            Path to the generated WebP sticker file, or None on failure.
-        """
-        import aiohttp
-
-        try:
-            from PIL import Image
-        except ImportError:
-            logger.warning("Sticker generation requires Pillow: pip install Pillow")
-            return None
-
-        sticker_path = tempfile.mktemp(suffix=".webp", prefix="nanobot_sticker_")
-
-        # --- Strategy 1: Download from Twemoji CDN ---
-        try:
-            # Build Twemoji URL
-            codepoints = []
-            for ch in emoji_or_desc.strip():
-                cp = ord(ch)
-                if cp == 0xFE0F:
-                    continue
-                codepoints.append(f"{cp:x}")
-
-            if codepoints:
-                filename = "-".join(codepoints)
-                # Try PNG first (72x72), then SVG
-                png_url = f"https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72/{filename}.png"
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(png_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            png_data = await resp.read()
-                            # Open PNG and resize to 512x512 with high quality
-                            import io
-                            emoji_img = Image.open(io.BytesIO(png_data)).convert("RGBA")
-                            # Resize to 512x512 with LANCZOS for best quality
-                            emoji_img = emoji_img.resize((512, 512), Image.LANCZOS)
-                            emoji_img.save(sticker_path, 'WEBP', quality=95)
-
-                            if Path(sticker_path).exists() and Path(sticker_path).stat().st_size > 0:
-                                logger.debug("Sticker generated from Twemoji CDN: {}", emoji_or_desc)
-                                return sticker_path
-                        else:
-                            logger.debug("Twemoji CDN returned {}: {}", resp.status, png_url)
-        except Exception as e:
-            logger.debug("Twemoji download failed, falling back to font rendering: {}", e)
-
-        # --- Strategy 2: Fallback to Pillow font rendering ---
-        try:
-            from PIL import ImageDraw, ImageFont
-
-            img = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-
-            text = emoji_or_desc
-            font_size = 256 if len(text) <= 2 else 128
-            font = None
-
-            emoji_font_paths = [
-                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-                "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
-                "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
-                "/System/Library/Fonts/Apple Color Emoji.ttc",
-                "C:/Windows/Fonts/seguiemj.ttf",
-                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-                "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-                "/System/Library/Fonts/PingFang.ttc",
-                "C:/Windows/Fonts/msyh.ttc",
-            ]
-
-            for font_path in emoji_font_paths:
-                if Path(font_path).exists():
-                    try:
-                        font = ImageFont.truetype(font_path, font_size)
-                        break
-                    except Exception:
-                        continue
-
-            if font is None:
-                font = ImageFont.load_default()
-
-            bbox = draw.textbbox((0, 0), text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            x = (512 - text_width) // 2
-            y = (512 - text_height) // 2
-
-            try:
-                draw.text((x, y), text, font=font, fill=(255, 255, 255, 255),
-                          embedded_color=True)
-            except TypeError:
-                draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
-
-            img.save(sticker_path, 'WEBP', quality=90)
-
-            if Path(sticker_path).exists() and Path(sticker_path).stat().st_size > 0:
-                return sticker_path
-
-            return None
-        except Exception as e:
-            logger.warning("Sticker generation failed: {}", e)
-            return None
-
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message under the global lock."""
         async with self._processing_lock:
@@ -739,15 +544,13 @@ class AgentLoop:
                 await self._send_typing_indicator(msg, composing=False)
 
                 if response is not None:
-                    # WhatsApp: extract and send stickers, strip [voice] tags before text reply
+                    # WhatsApp: strip [voice] tags before text reply
                     original_content = response.content
                     has_voice_tag = False
                     if msg.channel == "whatsapp" and response.content:
-                        # 1. Send stickers and strip [sticker:xxx] tags
-                        cleaned = await self._send_stickers_from_response(msg, response.content)
-                        # 2. Check for [voice] tag and strip it
-                        has_voice_tag = bool(self._VOICE_TAG_RE.search(cleaned))
-                        cleaned = self._VOICE_TAG_RE.sub('', cleaned).strip()
+                        # Check for [voice] tag and strip it
+                        has_voice_tag = bool(self._VOICE_TAG_RE.search(response.content))
+                        cleaned = self._VOICE_TAG_RE.sub('', response.content).strip()
                         if cleaned != response.content:
                             response = OutboundMessage(
                                 channel=response.channel,

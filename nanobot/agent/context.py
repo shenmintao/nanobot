@@ -130,8 +130,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if channel == "whatsapp":
             lines.append(
                 "\n## WhatsApp 特殊能力\n"
-                "- 发送表情包：在回复中使用 [sticker:😊] 或 [sticker:❤️] 标记，系统会自动将 emoji 渲染为 WhatsApp 贴纸发送。"
-                "适合在表达情感、打招呼、庆祝等场景使用。可以和文字混合使用，例如：'早上好！[sticker:🌅]'\n"
+                "- 表情：在回复文字中自然地使用 emoji 表达情感，例如：'早上好！🌅 今天天气真不错 😊'\n"
                 "- 语音回复：在回复中加入 [voice] 标记，系统会将你的文字转为语音消息发送（不会同时发文字）。"
                 "[voice] 标记不会显示给用户。例如：'晚安，做个好梦 [voice]'\n"
                 "注意：使用 [voice] 时只会发送语音，不会发送文字。根据对话情境自然地使用这些能力。"
