@@ -74,7 +74,7 @@ export class WhatsAppClient {
 
     // Use hardcoded version to avoid network request during initialization
     // fetchLatestBaileysVersion() doesn't support proxy configuration
-    const version = [2, 3000, 1033846690]; // Baileys 2.3000.1033846690
+    const version: [number, number, number] = [2, 3000, 1033846690]; // Baileys 2.3000.1033846690
     console.log(`Using Baileys version: ${version.join('.')}`);
 
 
