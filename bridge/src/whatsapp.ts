@@ -19,6 +19,8 @@ import pino from 'pino';
 import { writeFile, mkdir, readFile } from 'fs/promises';
 import { join, extname } from 'path';
 import { randomBytes } from 'crypto';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 
 const VERSION = '0.1.0';
 
@@ -55,6 +57,25 @@ export class WhatsAppClient {
 
     console.log(`Using Baileys version: ${version.join('.')}`);
 
+    // Configure proxy agent if proxy environment variables are set
+    let agent: any = undefined;
+    const proxyUrl = process.env.https_proxy || process.env.HTTPS_PROXY ||
+                     process.env.http_proxy || process.env.HTTP_PROXY ||
+                     process.env.all_proxy || process.env.ALL_PROXY;
+
+    if (proxyUrl) {
+      console.log(`🔄 Using proxy: ${proxyUrl.replace(/:[^:@]*@/, ':***@')}`); // Hide password in logs
+      try {
+        if (proxyUrl.startsWith('socks')) {
+          agent = new SocksProxyAgent(proxyUrl);
+        } else {
+          agent = new HttpsProxyAgent(proxyUrl);
+        }
+      } catch (error) {
+        console.error('Failed to create proxy agent:', error);
+      }
+    }
+
     // Create socket following OpenClaw's pattern
     this.sock = makeWASocket({
       auth: {
@@ -67,6 +88,7 @@ export class WhatsAppClient {
       browser: ['nanobot', 'cli', VERSION],
       syncFullHistory: false,
       markOnlineOnConnect: false,
+      ...(agent ? { agent } : {}),
     });
 
     // Handle WebSocket errors
