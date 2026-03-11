@@ -13,7 +13,20 @@
 
 ## 🚀 快速开始
 
-### 1. 导入角色和世界设定
+**⚠️ 重要：根据你的使用场景选择配置模式**
+
+### 模式选择
+
+| 使用场景 | 推荐模式 | 配置文档 |
+|---------|---------|---------|
+| 文字聊天（WhatsApp/Telegram） | 标准模式 | 见下方 |
+| 语音输出（TTS）| 语音模式 | [CONFIGURATION.md](CONFIGURATION.md) |
+
+### 标准模式配置（推荐）
+
+**特点：** 保留动作描述，对话生动有趣
+
+#### 1. 导入角色和世界设定
 
 ```bash
 # 导入情感伙伴角色卡
@@ -23,18 +36,27 @@ nanobot st char import nanobot/skills/emotional-companion/examples/companion_cha
 nanobot st worldinfo import nanobot/skills/emotional-companion/examples/worldinfo_emotional_awareness.json
 ```
 
-### 2. 配置 SillyTavern
+#### 2. 配置 SillyTavern
 
 编辑你的 `config.json`:
 
 ```json
 {
   "sillytavern": {
-    "enabled": true,
-    "response_filter_tag": "speech"
+    "enabled": true
+    // 不设置 response_filter_tag - 保留完整输出
   }
 }
 ```
+
+**输出效果：**
+```
+AI: *微笑着挥手* 嗨！见到你真开心~ 今天过得怎么样？
+```
+
+### 语音模式配置（仅需要 TTS 时使用）
+
+详见 **[CONFIGURATION.md](CONFIGURATION.md)** 完整说明
 
 ### 3. 启用主动关怀（可选）
 
