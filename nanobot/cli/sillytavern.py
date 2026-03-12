@@ -328,6 +328,190 @@ def preset_deactivate():
     console.print("[green]✓[/green] Preset deactivated")
 
 
+@preset_app.command("show")
+def preset_show(name: str = typer.Argument(..., help="Preset name")):
+    """Show preset details and prompt entries."""
+    from nanobot.sillytavern.storage import list_presets, get_preset
+
+    for p in list_presets():
+        if p.get("name", "").lower() == name.lower():
+            preset = get_preset(p["id"])
+            if not preset:
+                console.print(f"[red]Failed to load preset: {name}[/red]")
+                return
+
+            console.print(f"[bold]Preset: {preset.name}[/bold]\n")
+            console.print(f"Temperature: {preset.data.temperature}")
+            console.print(f"Top P: {preset.data.top_p}")
+            console.print(f"Top K: {preset.data.top_k}")
+            console.print(f"Frequency Penalty: {preset.data.frequency_penalty}")
+            console.print(f"Presence Penalty: {preset.data.presence_penalty}")
+            console.print(f"\n[bold]Prompt Entries:[/bold]\n")
+
+            table = Table()
+            table.add_column("#", style="dim", width=4)
+            table.add_column("Name")
+            table.add_column("Role", width=10)
+            table.add_column("Enabled", width=8)
+            table.add_column("Position", width=8)
+            table.add_column("Content Preview", max_width=40)
+
+            for idx, prompt in enumerate(preset.data.prompts):
+                enabled_str = "[green]✓[/green]" if prompt.enabled else "[dim]✗[/dim]"
+                preview = prompt.content[:40] + "..." if len(prompt.content) > 40 else prompt.content
+                preview = preview.replace("\n", " ")
+                table.add_row(
+                    str(idx),
+                    prompt.name or prompt.identifier,
+                    prompt.role,
+                    enabled_str,
+                    str(prompt.injection_position),
+                    preview
+                )
+
+            console.print(table)
+            console.print(f"\n[dim]Tip: Use 'nanobot st preset toggle-prompt {name} <index>' to enable/disable prompts[/dim]")
+            return
+    console.print(f"[red]Preset not found: {name}[/red]")
+
+
+@preset_app.command("toggle-prompt")
+def preset_toggle_prompt(
+    preset_name: str = typer.Argument(..., help="Preset name"),
+    prompt_indices: str = typer.Argument(..., help="Prompt index or indices (e.g., '3' or '3,4,5,6' or '3-6')"),
+):
+    """Toggle one or more prompt entries in a preset."""
+    from nanobot.sillytavern.storage import list_presets, get_preset, _preset_dir, _write_json
+    from dataclasses import asdict
+
+    # Parse indices
+    indices = []
+    try:
+        for part in prompt_indices.split(','):
+            part = part.strip()
+            if '-' in part:
+                # Range: 3-6 means [3, 4, 5, 6]
+                start, end = part.split('-')
+                indices.extend(range(int(start), int(end) + 1))
+            else:
+                # Single index
+                indices.append(int(part))
+    except ValueError:
+        console.print(f"[red]Invalid index format. Use: 3 or 3,4,5 or 3-6[/red]")
+        return
+
+    for p in list_presets():
+        if p.get("name", "").lower() == preset_name.lower():
+            preset = get_preset(p["id"])
+            if not preset:
+                console.print(f"[red]Failed to load preset[/red]")
+                return
+
+            toggled = []
+            invalid = []
+
+            for idx in indices:
+                if idx < 0 or idx >= len(preset.data.prompts):
+                    invalid.append(idx)
+                    continue
+
+                # Toggle the enabled state
+                preset.data.prompts[idx].enabled = not preset.data.prompts[idx].enabled
+                prompt_name = preset.data.prompts[idx].name or preset.data.prompts[idx].identifier
+                status = "enabled" if preset.data.prompts[idx].enabled else "disabled"
+                toggled.append(f"{prompt_name} ({status})")
+
+            if invalid:
+                console.print(f"[yellow]Warning: Invalid indices skipped: {invalid}[/yellow]")
+
+            if not toggled:
+                console.print(f"[red]No valid prompts to toggle[/red]")
+                return
+
+            # Save the updated preset
+            _write_json(_preset_dir() / f"{preset.id}.json", asdict(preset))
+
+            console.print(f"[green]✓[/green] Toggled {len(toggled)} prompt(s):")
+            for item in toggled:
+                console.print(f"  • {item}")
+            return
+    console.print(f"[red]Preset not found: {preset_name}[/red]")
+
+
+@preset_app.command("enable-all")
+def preset_enable_all(
+    preset_name: str = typer.Argument(..., help="Preset name"),
+    role: str = typer.Option(None, "--role", "-r", help="Only enable prompts with this role (system/user/assistant)"),
+):
+    """Enable all (or filtered) prompt entries in a preset."""
+    from nanobot.sillytavern.storage import list_presets, get_preset, _preset_dir, _write_json
+    from dataclasses import asdict
+
+    for p in list_presets():
+        if p.get("name", "").lower() == preset_name.lower():
+            preset = get_preset(p["id"])
+            if not preset:
+                console.print(f"[red]Failed to load preset[/red]")
+                return
+
+            count = 0
+            for prompt in preset.data.prompts:
+                if role and prompt.role.lower() != role.lower():
+                    continue
+                if not prompt.enabled:
+                    prompt.enabled = True
+                    count += 1
+
+            if count == 0:
+                console.print(f"[dim]No prompts changed (all matching prompts already enabled)[/dim]")
+                return
+
+            # Save the updated preset
+            _write_json(_preset_dir() / f"{preset.id}.json", asdict(preset))
+
+            filter_msg = f" with role '{role}'" if role else ""
+            console.print(f"[green]✓[/green] Enabled {count} prompt(s){filter_msg}")
+            return
+    console.print(f"[red]Preset not found: {preset_name}[/red]")
+
+
+@preset_app.command("disable-all")
+def preset_disable_all(
+    preset_name: str = typer.Argument(..., help="Preset name"),
+    role: str = typer.Option(None, "--role", "-r", help="Only disable prompts with this role (system/user/assistant)"),
+):
+    """Disable all (or filtered) prompt entries in a preset."""
+    from nanobot.sillytavern.storage import list_presets, get_preset, _preset_dir, _write_json
+    from dataclasses import asdict
+
+    for p in list_presets():
+        if p.get("name", "").lower() == preset_name.lower():
+            preset = get_preset(p["id"])
+            if not preset:
+                console.print(f"[red]Failed to load preset[/red]")
+                return
+
+            count = 0
+            for prompt in preset.data.prompts:
+                if role and prompt.role.lower() != role.lower():
+                    continue
+                if prompt.enabled:
+                    prompt.enabled = False
+                    count += 1
+
+            if count == 0:
+                console.print(f"[dim]No prompts changed (all matching prompts already disabled)[/dim]")
+                return
+
+            # Save the updated preset
+            _write_json(_preset_dir() / f"{preset.id}.json", asdict(preset))
+
+            filter_msg = f" with role '{role}'" if role else ""
+            console.print(f"[green]✓[/green] Disabled {count} prompt(s){filter_msg}")
+            return
+    console.print(f"[red]Preset not found: {preset_name}[/red]")
+
+
 @preset_app.command("delete")
 def preset_delete(name: str = typer.Argument(..., help="Preset name")):
     """Delete a preset."""
