@@ -326,6 +326,14 @@ class ExecToolConfig(Base):
     path_append: str = ""
 
 
+class ImageGenConfig(Base):
+    """Image generation tool configuration (ikun API)."""
+
+    enabled: bool = False
+    api_key: str = ""  # ikun API key from https://api.ikuncode.cc
+    proxy: str | None = None  # Optional proxy for API requests
+
+
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
@@ -375,6 +383,7 @@ class ToolsConfig(Base):
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    image_gen: ImageGenConfig = Field(default_factory=ImageGenConfig, alias="imageGen")
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

@@ -443,6 +443,7 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        image_gen_config=config.tools.image_gen,
     )
     _attach_sillytavern_hooks(agent, config)
 
@@ -626,6 +627,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        image_gen_config=config.tools.image_gen,
     )
     _attach_sillytavern_hooks(agent_loop, config)
 
