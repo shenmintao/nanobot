@@ -30,12 +30,18 @@ class ImageGenTool(Tool):
         self.proxy = proxy
         self._default_reference = reference_image
 
-    def _resolve_default_reference(self) -> str | None:
+    def _resolve_default_reference(self, scene: str = "") -> str | None:
         """Resolve the default reference image: active character > global config.
 
-        Supports two formats in character card extensions.nanobot:
-          - reference_image_base64: base64-encoded image (most portable, stored in JSON)
+        Supports in character card extensions.nanobot:
+          - reference_image_base64: base64-encoded image (most portable)
           - reference_image: file path to an image file
+          - reference_images: dict of scene → file path (e.g. {"beach": "/path/to/beach.png"})
+          - reference_images_base64: dict of scene → base64 string
+
+        Args:
+            scene: Optional scene tag (e.g. "beach", "formal", "winter").
+                   If provided, tries to match a scene-specific image first.
         """
         # 1. Check active SillyTavern character's extensions
         try:
@@ -44,10 +50,15 @@ class ImageGenTool(Tool):
             if char and char.data.extensions:
                 nanobot_ext = char.data.extensions.get("nanobot", {})
                 if isinstance(nanobot_ext, dict):
+                    # Try scene-specific image first
+                    if scene:
+                        result = self._resolve_scene_reference(char, nanobot_ext, scene)
+                        if result:
+                            return result
+
                     # Prefer base64 (self-contained in the card JSON)
                     b64_data = nanobot_ext.get("reference_image_base64", "")
                     if b64_data:
-                        # Save to a temp file so downstream code can read it
                         cache_path = self._cache_base64_reference(char.id, b64_data)
                         if cache_path:
                             logger.debug("Using character '{}' embedded reference image", char.name)
@@ -66,6 +77,51 @@ class ImageGenTool(Tool):
             return self._default_reference
 
         return None
+
+    def _resolve_scene_reference(self, char: Any, nanobot_ext: dict, scene: str) -> str | None:
+        """Try to resolve a scene-specific reference image from character card."""
+        scene_lower = scene.lower()
+
+        # Check reference_images_base64 dict
+        scene_b64_map = nanobot_ext.get("reference_images_base64", {})
+        if isinstance(scene_b64_map, dict) and scene_lower in scene_b64_map:
+            b64_data = scene_b64_map[scene_lower]
+            if b64_data:
+                cache_path = self._cache_base64_reference(f"{char.id}_{scene_lower}", b64_data)
+                if cache_path:
+                    logger.debug("Using character '{}' scene '{}' embedded reference", char.name, scene)
+                    return cache_path
+
+        # Check reference_images file path dict
+        scene_map = nanobot_ext.get("reference_images", {})
+        if isinstance(scene_map, dict) and scene_lower in scene_map:
+            path = scene_map[scene_lower]
+            if path and Path(path).exists():
+                logger.debug("Using character '{}' scene '{}' reference: {}", char.name, scene, path)
+                return path
+
+        return None
+
+    def _resolve_ref(self, ref: str) -> str | None:
+        """Resolve a single reference_image value.
+
+        Handles:
+          - "__default__"        → character's default reference image
+          - "__default__:beach"  → character's scene-specific reference (falls back to default)
+          - "/path/to/file.png"  → literal file path (returned as-is)
+        """
+        if not ref:
+            return None
+        if ref.startswith("__default__"):
+            scene = ""
+            if ":" in ref:
+                scene = ref.split(":", 1)[1]
+            resolved = self._resolve_default_reference(scene)
+            if not resolved and scene:
+                # Scene not found, fall back to default (no scene)
+                resolved = self._resolve_default_reference()
+            return resolved
+        return ref
 
     def _cache_base64_reference(self, char_id: str, b64_data: str) -> str | None:
         """Decode base64 reference image and cache to disk. Returns cached file path."""
@@ -107,7 +163,9 @@ class ImageGenTool(Tool):
         base += (
             " When generating images of yourself or your character, set reference_image to "
             "'__default__' to use the character's avatar as a base for consistent appearance. "
-            "This automatically picks up the active character's reference image."
+            "For scene-specific outfits, use '__default__:scene' (e.g. '__default__:beach', "
+            "'__default__:formal', '__default__:winter'). Falls back to default avatar if "
+            "no scene-specific image is configured."
         )
         return base
 
@@ -158,18 +216,14 @@ class ImageGenTool(Tool):
         if not self._api_key:
             return "Error: Image generation API key not configured. Set tools.imageGen.apiKey in config."
 
-        # Normalize reference_image to list
+        # Normalize reference_image to list, resolving __default__ and __default__:scene
         ref_images: list[str] = []
         if reference_image:
             if isinstance(reference_image, str):
-                if reference_image == "__default__":
-                    default_ref = self._resolve_default_reference()
-                    if default_ref:
-                        ref_images = [default_ref]
-                else:
-                    ref_images = [reference_image]
+                ref_images = [self._resolve_ref(reference_image)]
             elif isinstance(reference_image, list):
-                ref_images = reference_image
+                ref_images = [self._resolve_ref(r) for r in reference_image]
+            ref_images = [r for r in ref_images if r]  # remove None
 
         # Validate and load all reference images
         ref_images_data: list[tuple[bytes, str]] = []  # [(image_bytes, mime_type), ...]
