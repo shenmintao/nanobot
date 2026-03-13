@@ -338,6 +338,7 @@ class ImageGenConfig(Base):
     base_url: str = "https://api.openai.com/v1"  # Base URL (supports OpenAI-compatible endpoints)
     model: str = "dall-e-3"  # Model name (e.g., dall-e-3, dall-e-2, or custom model)
     proxy: str | None = None  # Optional HTTP/SOCKS proxy
+    reference_image: str = ""  # Default reference image path for img2img (character avatar)
 
 
 class MCPServerConfig(Base):

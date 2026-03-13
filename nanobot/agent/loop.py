@@ -138,6 +138,7 @@ class AgentLoop:
                 base_url=self.image_gen_config.base_url,
                 model=self.image_gen_config.model,
                 proxy=self.image_gen_config.proxy,
+                reference_image=self.image_gen_config.reference_image,
             ))
 
     async def _connect_mcp(self) -> None:
