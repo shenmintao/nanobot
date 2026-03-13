@@ -68,29 +68,53 @@ THEN
 ```
 
 ### Step 2: 场景分析
-分析用户照片和文本，确定：
+仔细观察用户照片和文本，提取：
 - **场景类型**：旅游/日常/庆祝/亲密时刻
 - **情感基调**：兴奋/浪漫/温馨/支持性
 - **合适的互动**：并肩/对视/拥抱/手牵手
+- **环境细节**（从照片中观察）：
+  - 天气/光照：晴天/阴天/雨天/雪天/日落/夜晚
+  - 季节感：樱花/落叶/雪景/绿荫
+  - 时间段：清晨的柔光/正午的强光/黄昏的暖色/夜间灯光
+  - 室内/室外：咖啡馆暖光/街道路灯/自然光
+
+这些环境细节必须反映在生成的 prompt 中，确保合成照片与原照片的氛围一致。
 
 ### Step 3: 生成 Prompt
 基于场景类型自动构建 prompt：
 
+注意：prompt 中必须包含从照片观察到的环境细节（天气、光照、季节），使合成结果与原照片协调。
+
 ```python
 # 旅游场景
-prompt = f"Create a natural photo showing the person from image 1 and the character from image 2 standing together at {location}, both smiling at the camera, {emotion} atmosphere, golden hour lighting, photorealistic composition"
+prompt = f"Create a natural photo showing the person from image 1 and the character from image 2 standing together at {location}, both smiling at the camera, {emotion} atmosphere, {lighting} lighting, {weather} weather, photorealistic composition"
 
 # 日常场景
-prompt = f"Place both people from these images in a {setting} (e.g., cafe, living room), sitting {position} (e.g., across from each other), {activity} (e.g., chatting, laughing), warm and cozy atmosphere"
+prompt = f"Place both people from these images in a {setting}, sitting {position}, {activity}, {lighting} lighting, {atmosphere} atmosphere"
 
 # 庆祝场景
-prompt = f"Create a joyful {event} celebration photo with both people from these images, {decoration} in the background, happy expressions, festive mood"
+prompt = f"Create a joyful {event} celebration photo with both people from these images, {decoration} in the background, happy expressions, festive mood, {lighting} lighting"
 
 # 亲密场景
-prompt = f"Generate a tender moment showing the person from image 1 and character from image 2 {action} (e.g., hugging, holding hands), {emotion} atmosphere, soft lighting"
+prompt = f"Generate a tender moment showing the person from image 1 and character from image 2 {action}, {emotion} atmosphere, {lighting} lighting"
 ```
 
+**环境变量示例：**
+- `{lighting}`: "warm golden hour" / "soft overcast" / "cool blue twilight" / "cozy indoor warm"
+- `{weather}`: "clear sky" / "light rain" / "snowy" / "cloudy"
+- `{atmosphere}`: "warm and cozy" / "fresh and bright" / "romantic twilight" / "peaceful morning"
+
 ### Step 4: 调用工具
+
+根据场景选择合适的参考图标签：
+- `"__default__"` — 使用角色默认形象
+- `"__default__:beach"` — 使用海边/泳装形象
+- `"__default__:formal"` — 使用正式/礼服形象
+- `"__default__:winter"` — 使用冬季形象
+- `"__default__:sport"` — 使用运动装形象
+
+如果场景标签不存在，自动回退到默认形象。
+
 ```json
 {
   "tool": "image_gen",
@@ -98,9 +122,9 @@ prompt = f"Generate a tender moment showing the person from image 1 and characte
     "prompt": "[上一步生成的 prompt]",
     "reference_image": [
       "/path/to/user_uploaded_photo.jpg",
-      "__default__"  // 自动使用角色参考图
+      "__default__:beach"
     ],
-    "size": "1024x1024"  // 或根据场景调整
+    "size": "1024x1024"
   }
 }
 ```
@@ -190,21 +214,24 @@ prompt = f"Generate a tender moment showing the person from image 1 and characte
 ## 场景适配规则
 
 ### 自动选择参考图（如果配置了多套）
+
+使用 `__default__:场景` 语法。如果该场景未配置，自动回退到 `__default__`。
+
 ```
 IF scene contains "beach" OR "swim" OR "ocean":
-    use reference_images.beach
+    reference_image = "__default__:beach"
 
 ELSE IF scene contains "formal" OR "wedding" OR "party":
-    use reference_images.formal
+    reference_image = "__default__:formal"
 
 ELSE IF scene contains "winter" OR "snow" OR "cold":
-    use reference_images.winter
+    reference_image = "__default__:winter"
 
 ELSE IF scene contains "sport" OR "gym" OR "run":
-    use reference_images.sport
+    reference_image = "__default__:sport"
 
 ELSE:
-    use default reference_image
+    reference_image = "__default__"
 ```
 
 ### 图片尺寸选择
@@ -262,7 +289,7 @@ ELSE:
 
 1. ✓ **分析用户消息** - 提取场景、情绪、陪伴需求
 2. ✓ **选择合适的 prompt 模板**
-3. ✓ **确定参考图** - 单套用 `__default__`，多套根据场景选择
+3. ✓ **确定参考图** - 用 `__default__` 或 `__default__:场景`（如 `__default__:beach`）
 4. ✓ **调用 image_gen 工具**
 5. ✓ **生成情感回应** - 温暖、真诚的文字
 6. ✓ **发送合成照片** - 使用 message 工具
