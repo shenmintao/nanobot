@@ -72,13 +72,20 @@ THEN
 - **场景类型**：旅游/日常/庆祝/亲密时刻
 - **情感基调**：兴奋/浪漫/温馨/支持性
 - **合适的互动**：并肩/对视/拥抱/手牵手
+- **具体物件和设施**（从照片中精确识别，这是最关键的一步）：
+  - 必须区分相似但不同的物件：浴缸 vs 洗脸池、沙发 vs 椅子、灶台 vs 烤箱
+  - 记录物件的材质、颜色、大小：白色陶瓷浴缸、深灰色布艺沙发、木质餐桌
+  - 记录用户正在进行的具体动作：往浴缸里放水、在灶台上翻炒、趴在桌上写字
+- **空间关系**：人与物件的相对位置（站在浴缸旁边、坐在餐桌前、靠在窗边）
 - **环境细节**（从照片中观察）：
   - 天气/光照：晴天/阴天/雨天/雪天/日落/夜晚
   - 季节感：樱花/落叶/雪景/绿荫
   - 时间段：清晨的柔光/正午的强光/黄昏的暖色/夜间灯光
   - 室内/室外：咖啡馆暖光/街道路灯/自然光
 
-这些环境细节必须反映在生成的 prompt 中，确保合成照片与原照片的氛围一致。
+⚠️ **重要**：场景中的具体物件必须在 prompt 中被明确、精确地描述。
+不要用笼统的 "bathroom" 替代具体的 "bathtub with running water"。
+AI 图像生成模型需要精确的物件描述才能正确渲染场景。
 
 ### Step 3: 生成 Prompt
 基于场景类型自动构建 prompt：
@@ -90,18 +97,42 @@ prompt 必须明确指示模型保留用户照片中的原始背景/场景，仅
 
 注意：prompt 中必须包含从照片观察到的环境细节（天气、光照、季节），使角色融入效果与原照片协调。
 
-```python
-# 旅游场景
-prompt = f"Keep the original background from image 1 exactly as it is. Naturally insert the character from image 2 standing next to the person in image 1 at {location}, both smiling at the camera, matching the existing {lighting} lighting and {weather} conditions, seamless photorealistic blending"
+**核心原则：人体解剖学正确性**
+prompt 中必须包含人体正确性约束，避免 AI 生成多余的手指、手臂、肢体等解剖学错误。
+每个 prompt 末尾必须附加以下约束语：
+`anatomically correct human body, correct number of fingers (5 per hand), correct number of limbs, natural human proportions, no extra or missing body parts`
 
-# 日常场景
-prompt = f"Preserve the original scene from image 1 unchanged. Add the character from image 2 into the scene, sitting {position} near the person, {activity}, matching the existing {lighting} lighting and {atmosphere} atmosphere"
+**核心原则：场景细节精确描述**
+必须从用户照片和文字中提取**具体的场景物件和空间特征**，而不是使用笼统的场景类型词。
+例如：
+- ❌ "bathroom scene" → 模型可能生成任何浴室场景
+- ✅ "standing next to a white bathtub filled with running water, tiled bathroom wall behind" → 精确描述具体物件
+- ❌ "kitchen" → 模型可能生成任何厨房
+- ✅ "standing at a gas stove with a wok, cooking vegetables, kitchen counter with cutting board visible"
+
+在分析用户照片时，必须识别并在 prompt 中明确写出：
+- **核心物件**：浴缸/洗脸池/沙发/餐桌等具体家具或设备
+- **动作细节**：往浴缸里放水/在灶台上炒菜/坐在沙发上看书
+- **空间布局**：物件的相对位置关系
+- **材质和颜色**：白色瓷砖墙/木质地板/大理石台面
+
+```python
+# 人体正确性后缀（所有 prompt 必须附加）
+anatomy_suffix = "anatomically correct human body, correct number of fingers (5 per hand), correct number of limbs, natural human proportions, no extra or missing body parts, no deformed hands or feet"
+
+# 旅游场景
+prompt = f"Keep the original background from image 1 exactly as it is. Naturally insert the character from image 2 standing next to the person in image 1 at {location}, near {specific_landmark_or_object}, both smiling at the camera, matching the existing {lighting} lighting and {weather} conditions, seamless photorealistic blending, {anatomy_suffix}"
+
+# 日常场景 - 必须精确描述场景中的具体物件和动作
+prompt = f"Preserve the original scene from image 1 unchanged. Add the character from image 2 into the scene, {precise_position_relative_to_object} near the person, {detailed_activity_with_specific_objects}, matching the existing {lighting} lighting and {atmosphere} atmosphere, {anatomy_suffix}"
+# 例：precise_position_relative_to_object = "standing beside the white bathtub"
+# 例：detailed_activity_with_specific_objects = "turning on the faucet to fill the bathtub with warm water, steam rising"
 
 # 庆祝场景
-prompt = f"Keep the background and setting from image 1 intact. Place the character from image 2 next to the person, celebrating {event} together, happy expressions, matching the existing festive scene and {lighting} lighting"
+prompt = f"Keep the background and setting from image 1 intact. Place the character from image 2 next to the person, celebrating {event} together, {specific_celebration_details}, happy expressions, matching the existing festive scene and {lighting} lighting, {anatomy_suffix}"
 
 # 亲密场景
-prompt = f"Maintain the original background from image 1. Blend the character from image 2 into the scene, {action} with the person, matching the existing {emotion} atmosphere and {lighting} lighting"
+prompt = f"Maintain the original background from image 1. Blend the character from image 2 into the scene, {action} with the person, {specific_pose_and_body_contact}, matching the existing {emotion} atmosphere and {lighting} lighting, {anatomy_suffix}"
 ```
 
 **环境变量示例：**
@@ -169,49 +200,49 @@ prompt = f"Maintain the original background from image 1. Blend the character fr
 ### 旅游场景模板
 ```
 # 地标打卡
-"Preserve the original background scene from image 1. Insert the character from image 2 standing side by side with the person, both looking at the camera with big smiles, tourist photo style, match the existing lighting and colors, seamless photorealistic blending"
+"Preserve the original background scene from image 1. Insert the character from image 2 standing side by side with the person in front of {specific_landmark}, both looking at the camera with big smiles, tourist photo style, match the existing lighting and colors, seamless photorealistic blending, anatomically correct human body, correct number of fingers (5 per hand), natural human proportions, no extra or missing body parts"
 
 # 自然风景
-"Keep the original landscape from image 1 unchanged. Add the character from image 2 standing close to the person, both enjoying the view together, match the existing golden hour/natural lighting, seamless blending into the scene"
+"Keep the original landscape from image 1 unchanged. Add the character from image 2 standing close to the person on {specific_terrain: rocky cliff edge / sandy beach / wooden boardwalk / grassy hillside}, both enjoying the {specific_view: ocean sunset / mountain panorama / valley below} together, match the existing golden hour/natural lighting, seamless blending into the scene, anatomically correct human body, correct number of fingers, natural proportions"
 
 # 城市探索
-"Maintain the original street scene from image 1. Place the character from image 2 walking alongside the person, casual and happy vibe, match the existing urban environment and daylight, candid photo style"
+"Maintain the original street scene from image 1. Place the character from image 2 walking alongside the person on {specific_street_detail: cobblestone sidewalk / neon-lit avenue / tree-lined boulevard}, casual and happy vibe, match the existing urban environment and daylight, candid photo style, anatomically correct human body, correct number of fingers, natural proportions"
 ```
 
 ### 日常场景模板
 ```
 # 咖啡馆
-"Keep the original cafe setting from image 1 intact. Add the character from image 2 sitting across from the person at the table, chatting and smiling, match the existing warm indoor lighting, seamless composition"
+"Keep the original cafe setting from image 1 intact. Add the character from image 2 sitting across from the person at the {specific: wooden table with two coffee cups / marble counter with latte art}, chatting and smiling, match the existing warm indoor lighting, seamless composition, anatomically correct human body, correct number of fingers (5 per hand), natural proportions"
 
 # 居家时光
-"Preserve the original room scene from image 1. Insert the character from image 2 sitting beside the person on the couch, relaxed posture, match the existing warm lighting and cozy atmosphere"
+"Preserve the original room scene from image 1. Insert the character from image 2 sitting beside the person on the {specific_furniture: gray fabric sofa / floor cushion / bed}, {specific_activity: watching TV / reading a book / playing with a cat}, relaxed posture, match the existing warm lighting and cozy atmosphere, anatomically correct human body, correct number of fingers, natural proportions"
 
 # 户外活动
-"Maintain the original outdoor scene from image 1. Place the character from image 2 next to the person, {activity} together, match the existing natural sunlight, happy and relaxed expressions, candid moment"
+"Maintain the original outdoor scene from image 1. Place the character from image 2 next to the person, {detailed_activity: jogging on the park trail / playing frisbee on the grass / sitting on a park bench eating ice cream} together, match the existing natural sunlight, happy and relaxed expressions, candid moment, anatomically correct human body, correct number of fingers, natural proportions"
 ```
 
 ### 庆祝场景模板
 ```
 # 生日
-"Keep the original scene from image 1 as the background. Add the character from image 2 next to the person near the birthday cake, joyful expressions, match the existing festive atmosphere and lighting"
+"Keep the original scene from image 1 as the background. Add the character from image 2 next to the person near the {specific: round birthday cake with lit candles on a table / cupcakes with sprinkles}, both with joyful expressions, {specific_gesture: clapping hands / blowing candles / holding a gift box}, match the existing festive atmosphere and lighting, anatomically correct human body, correct number of fingers (5 per hand), natural proportions"
 
 # 成就庆祝
-"Preserve the original scene from image 1. Insert the character from image 2 giving the person a congratulatory hug or high-five, proud and happy expressions, match the existing lighting and environment"
+"Preserve the original scene from image 1. Insert the character from image 2 giving the person a congratulatory {specific: high-five with one hand each / side hug with one arm}, proud and happy expressions, match the existing lighting and environment, anatomically correct human body, correct number of fingers, natural proportions, no extra hands or arms"
 
 # 节日
-"Maintain the original {holiday} scene from image 1 unchanged. Add the character from image 2 next to the person, festive mood, match the existing decorations, lighting, and atmosphere"
+"Maintain the original {holiday} scene from image 1 unchanged. Add the character from image 2 next to the person, {specific_festive_detail: holding sparklers / wearing party hats / exchanging gifts}, festive mood, match the existing decorations, lighting, and atmosphere, anatomically correct human body, correct number of fingers, natural proportions"
 ```
 
 ### 亲密场景模板
 ```
 # 拥抱
-"Keep the original background from image 1. Blend the character from image 2 into a tender hug with the person, close embrace, emotional moment, match the existing lighting, shallow depth of field"
+"Keep the original background from image 1. Blend the character from image 2 into a tender hug with the person, two people embracing with exactly two arms each, close embrace, emotional moment, match the existing lighting, shallow depth of field, anatomically correct human body, correct number of fingers, natural proportions, no extra limbs"
 
 # 牵手
-"Preserve the original scene from image 1. Add the character from image 2 holding hands with the person, intimate moment, match the existing lighting and atmosphere, focus on the hand-holding"
+"Preserve the original scene from image 1. Add the character from image 2 holding hands with the person, each person with exactly one hand holding the other's hand, intimate moment, match the existing lighting and atmosphere, anatomically correct hands with 5 fingers each, natural proportions"
 
 # 注视
-"Maintain the original background from image 1. Place the character from image 2 sitting close to the person, both looking at each other, gentle smiles, match the existing soft lighting, romantic and tender mood"
+"Maintain the original background from image 1. Place the character from image 2 sitting close to the person, both looking at each other, gentle smiles, hands resting naturally, match the existing soft lighting, romantic and tender mood, anatomically correct human body, correct number of fingers, natural proportions"
 ```
 
 ---
@@ -328,10 +359,14 @@ User: *uploads photo of themselves at Eiffel Tower*
 3. 生成 Prompt：
    "Preserve the original Eiffel Tower background from image 1
     exactly as it is. Insert the character from image 2
-    standing side by side with the person, both smiling
-    at the camera, looking happy and excited, match the
-    existing golden hour lighting and clear sky,
-    tourist photo style, seamless photorealistic blending"
+    standing side by side with the person on the stone plaza
+    in front of the Eiffel Tower iron lattice structure,
+    both smiling at the camera, looking happy and excited,
+    match the existing golden hour lighting and clear sky,
+    tourist photo style, seamless photorealistic blending,
+    anatomically correct human body, correct number of fingers
+    (5 per hand), natural human proportions, no extra or
+    missing body parts"
 
 4. 调用工具：
    image_gen(
